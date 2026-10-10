@@ -25,6 +25,7 @@
 - 内容许可证：[T8-LICENSE-CONTENT.txt](../skills/T8-LICENSE-CONTENT.txt)
 - 来源记录：[T8-PROMPT-LIBRARY-SOURCE.md](../skills/T8-PROMPT-LIBRARY-SOURCE.md)
 - 使用条件：CC BY 4.0 内容应保留署名、许可证链接，并说明修改；第三方来源视频、可识别角色、商标、平台标志、作者姓名和其他权利归原权利人，CC BY 4.0 不重新许可这些内容。
+- 项目修改：2026-10-10 将 9 个用户可见 Skill 名称、短说明和演示提示词中的 “Seedance” 品牌提示改为 “MiniMax H3”；仅改界面元数据，Skill 目录 ID 和底层 Skill 内容保持兼容。
 
 ## 默认短剧导演 Skill
 
