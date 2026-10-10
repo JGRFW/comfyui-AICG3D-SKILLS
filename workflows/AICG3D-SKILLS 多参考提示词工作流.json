@@ -1,0 +1,773 @@
+{
+  "id": "fa42b3fe-602b-4318-ae76-1aedc9710df4",
+  "revision": 0,
+  "last_node_id": 107,
+  "last_link_id": 7,
+  "nodes": [
+    {
+      "id": 100,
+      "type": "AICG3D_H3MediaLoader",
+      "pos": [
+        100,
+        180
+      ],
+      "size": [
+        330,
+        430
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "media_state",
+          "name": "media_state",
+          "type": "STRING",
+          "link": null,
+          "shape": 7,
+          "widget": {
+            "name": "media_state"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "AICG3D",
+          "name": "AICG3D",
+          "type": "MINIMAX_H3_MEDIA_BUNDLE",
+          "links": [
+            1
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "AICG3D_H3MediaLoader"
+      },
+      "title": "MiniMax H3 Aicg资源库",
+      "widgets_values": [
+        "{\"images\":[],\"audios\":[],\"videos\":[]}"
+      ],
+      "widgets_values_named": {
+        "media_state": "{\"images\":[],\"audios\":[],\"videos\":[]}"
+      }
+    },
+    {
+      "id": 101,
+      "type": "AICG3D_SKILLS_Settings",
+      "pos": [
+        500,
+        160
+      ],
+      "size": [
+        440,
+        470
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "运行方式",
+          "name": "运行方式",
+          "type": "COMBO",
+          "link": null,
+          "shape": 7,
+          "widget": {
+            "name": "运行方式"
+          }
+        },
+        {
+          "localized_name": "线上服务",
+          "name": "线上服务",
+          "type": "COMBO",
+          "link": null,
+          "shape": 7,
+          "widget": {
+            "name": "线上服务"
+          }
+        },
+        {
+          "localized_name": "API地址",
+          "name": "API地址",
+          "type": "STRING",
+          "link": null,
+          "shape": 7,
+          "widget": {
+            "name": "API地址"
+          }
+        },
+        {
+          "localized_name": "模型名称",
+          "name": "模型名称",
+          "type": "STRING",
+          "link": null,
+          "shape": 7,
+          "widget": {
+            "name": "模型名称"
+          }
+        },
+        {
+          "localized_name": "本地模型",
+          "name": "本地模型",
+          "type": "STRING",
+          "link": null,
+          "shape": 7,
+          "widget": {
+            "name": "本地模型"
+          }
+        },
+        {
+          "localized_name": "GPU或CPU",
+          "name": "GPU或CPU",
+          "type": "COMBO",
+          "link": null,
+          "shape": 7,
+          "widget": {
+            "name": "GPU或CPU"
+          }
+        },
+        {
+          "localized_name": "输出语言",
+          "name": "输出语言",
+          "type": "COMBO",
+          "link": null,
+          "shape": 7,
+          "widget": {
+            "name": "输出语言"
+          }
+        },
+        {
+          "localized_name": "读取参考图",
+          "name": "读取参考图",
+          "type": "BOOLEAN",
+          "link": null,
+          "shape": 7,
+          "widget": {
+            "name": "读取参考图"
+          }
+        },
+        {
+          "localized_name": "模型设置JSON",
+          "name": "模型设置JSON",
+          "type": "STRING",
+          "link": null,
+          "shape": 7,
+          "widget": {
+            "name": "模型设置JSON"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "设置JSON",
+          "name": "设置JSON",
+          "type": "STRING",
+          "links": [
+            2
+          ]
+        },
+        {
+          "localized_name": "模型列表JSON",
+          "name": "模型列表JSON",
+          "type": "STRING",
+          "links": []
+        },
+        {
+          "localized_name": "状态",
+          "name": "状态",
+          "type": "STRING",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "AICG3D_SKILLS_Settings"
+      },
+      "title": "① 提示词模型设置",
+      "widgets_values": [
+        "api",
+        "runninghub",
+        "https://www.runninghub.cn/openapi/v2",
+        "openai/gpt-5.6-sol",
+        "",
+        "cuda",
+        "中文",
+        true,
+        ""
+      ],
+      "widgets_values_named": {
+        "运行方式": "api",
+        "线上服务": "runninghub",
+        "API地址": "https://www.runninghub.cn/openapi/v2",
+        "模型名称": "openai/gpt-5.6-sol",
+        "本地模型": "",
+        "GPU或CPU": "cuda",
+        "输出语言": "中文",
+        "读取参考图": true,
+        "模型设置JSON": ""
+      }
+    },
+    {
+      "id": 102,
+      "type": "AICG3D_SKILLS_SkillSelector",
+      "pos": [
+        500,
+        680
+      ],
+      "size": [
+        390,
+        230
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "技能包",
+          "name": "技能包",
+          "type": "COMBO",
+          "link": null,
+          "shape": 7,
+          "widget": {
+            "name": "技能包"
+          }
+        },
+        {
+          "localized_name": "导演重点",
+          "name": "导演重点",
+          "type": "COMBO",
+          "link": null,
+          "shape": 7,
+          "widget": {
+            "name": "导演重点"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "技能包ID",
+          "name": "技能包ID",
+          "type": "STRING",
+          "links": [
+            3
+          ]
+        },
+        {
+          "localized_name": "技能重点",
+          "name": "技能重点",
+          "type": "STRING",
+          "links": [
+            4
+          ]
+        },
+        {
+          "localized_name": "技能说明",
+          "name": "技能说明",
+          "type": "STRING",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "AICG3D_SKILLS_SkillSelector"
+      },
+      "title": "② 技能选择",
+      "widgets_values": [
+        "minimax-h3-short-drama-director",
+        "自动选择"
+      ],
+      "widgets_values_named": {
+        "技能包": "minimax-h3-short-drama-director",
+        "导演重点": "自动选择"
+      }
+    },
+    {
+      "id": 103,
+      "type": "AICG3D_SKILLS_PromptExpander",
+      "pos": [
+        950,
+        160
+      ],
+      "size": [
+        450,
+        800
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "创意描述",
+          "name": "创意描述",
+          "type": "STRING",
+          "link": null,
+          "shape": 7,
+          "widget": {
+            "name": "创意描述"
+          }
+        },
+        {
+          "localized_name": "任务模式",
+          "name": "任务模式",
+          "type": "COMBO",
+          "link": null,
+          "shape": 7,
+          "widget": {
+            "name": "任务模式"
+          }
+        },
+        {
+          "localized_name": "输出画幅",
+          "name": "输出画幅",
+          "type": "COMBO",
+          "link": null,
+          "shape": 7,
+          "widget": {
+            "name": "输出画幅"
+          }
+        },
+        {
+          "localized_name": "视频时长",
+          "name": "视频时长",
+          "type": "FLOAT",
+          "link": null,
+          "shape": 7,
+          "widget": {
+            "name": "视频时长"
+          }
+        },
+        {
+          "localized_name": "动作强度",
+          "name": "动作强度",
+          "type": "COMBO",
+          "link": null,
+          "shape": 7,
+          "widget": {
+            "name": "动作强度"
+          }
+        },
+        {
+          "localized_name": "技能重点",
+          "name": "技能重点",
+          "type": "COMBO",
+          "link": null,
+          "shape": 7,
+          "widget": {
+            "name": "技能重点"
+          }
+        },
+        {
+          "localized_name": "技能包",
+          "name": "技能包",
+          "type": "COMBO",
+          "link": null,
+          "shape": 7,
+          "widget": {
+            "name": "技能包"
+          }
+        },
+        {
+          "localized_name": "输出语言",
+          "name": "输出语言",
+          "type": "COMBO",
+          "link": null,
+          "shape": 7,
+          "widget": {
+            "name": "输出语言"
+          }
+        },
+        {
+          "localized_name": "无模型时生成模板",
+          "name": "无模型时生成模板",
+          "type": "BOOLEAN",
+          "link": null,
+          "shape": 7,
+          "widget": {
+            "name": "无模型时生成模板"
+          }
+        },
+        {
+          "localized_name": "参考素材JSON",
+          "name": "参考素材JSON",
+          "type": "STRING",
+          "link": null,
+          "shape": 7,
+          "widget": {
+            "name": "参考素材JSON"
+          }
+        },
+        {
+          "localized_name": "技能重点输入",
+          "name": "技能重点输入",
+          "type": "STRING",
+          "link": 4,
+          "shape": 7,
+          "widget": {
+            "name": "技能重点输入"
+          }
+        },
+        {
+          "localized_name": "技能包输入",
+          "name": "技能包输入",
+          "type": "STRING",
+          "link": 3,
+          "shape": 7,
+          "widget": {
+            "name": "技能包输入"
+          }
+        },
+        {
+          "localized_name": "额外要求",
+          "name": "额外要求",
+          "type": "STRING",
+          "link": null,
+          "shape": 7,
+          "widget": {
+            "name": "额外要求"
+          }
+        },
+        {
+          "localized_name": "模型设置JSON",
+          "name": "模型设置JSON",
+          "type": "STRING",
+          "link": 2,
+          "shape": 7,
+          "widget": {
+            "name": "模型设置JSON"
+          }
+        },
+        {
+          "localized_name": "参考图片",
+          "name": "参考图片",
+          "type": "IMAGE",
+          "link": null,
+          "shape": 7
+        },
+        {
+          "localized_name": "AICG3D资源库",
+          "name": "AICG3D资源库",
+          "type": "MINIMAX_H3_MEDIA_BUNDLE",
+          "link": 1,
+          "shape": 7
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "H3提示词",
+          "name": "H3提示词",
+          "type": "STRING",
+          "links": [
+            5,
+            6
+          ]
+        },
+        {
+          "localized_name": "H3请求JSON",
+          "name": "H3请求JSON",
+          "type": "STRING",
+          "links": [
+            7
+          ]
+        },
+        {
+          "localized_name": "运行状态",
+          "name": "运行状态",
+          "type": "STRING",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "AICG3D_SKILLS_PromptExpander"
+      },
+      "title": "③ H3 多参考提示词推理",
+      "widgets_values": [
+        "图1和图2在图3场景打斗",
+        "Ref2VA 全能参考（推荐）",
+        "16:9（横屏）",
+        5.0,
+        "R2 商业高燃（默认）",
+        "自动选择",
+        "minimax-h3-short-drama-director",
+        "中文",
+        true,
+        "",
+        "",
+        "",
+        "请把最终提示词拆成4个连续视频段落，每段5秒，每段之间单独一行写 --- 分隔。第1段建立主体与场景，第2、3段推进动作与镜头，第4段完成高潮并给出明确末帧。",
+        ""
+      ],
+      "widgets_values_named": {
+        "创意描述": "图1和图2在图3场景打斗",
+        "任务模式": "Ref2VA 全能参考（推荐）",
+        "输出画幅": "16:9（横屏）",
+        "视频时长": 5.0,
+        "动作强度": "R2 商业高燃（默认）",
+        "技能重点": "自动选择",
+        "技能包": "minimax-h3-short-drama-director",
+        "输出语言": "中文",
+        "无模型时生成模板": true,
+        "参考素材JSON": "",
+        "技能重点输入": "",
+        "技能包输入": "",
+        "额外要求": "请把最终提示词拆成4个连续视频段落，每段5秒，每段之间单独一行写 --- 分隔。第1段建立主体与场景，第2、3段推进动作与镜头，第4段完成高潮并给出明确末帧。",
+        "模型设置JSON": ""
+      }
+    },
+    {
+      "id": 104,
+      "type": "AICG3D_SKILLS_ValidateH3Prompt",
+      "pos": [
+        1470,
+        160
+      ],
+      "size": [
+        400,
+        450
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "H3提示词",
+          "name": "H3提示词",
+          "type": "STRING",
+          "link": 5,
+          "shape": 7,
+          "widget": {
+            "name": "H3提示词"
+          }
+        },
+        {
+          "localized_name": "严格模式",
+          "name": "严格模式",
+          "type": "BOOLEAN",
+          "link": null,
+          "shape": 7,
+          "widget": {
+            "name": "严格模式"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "检查结果",
+          "name": "检查结果",
+          "type": "STRING",
+          "links": []
+        },
+        {
+          "localized_name": "问题清单",
+          "name": "问题清单",
+          "type": "STRING",
+          "links": []
+        },
+        {
+          "localized_name": "警告清单",
+          "name": "警告清单",
+          "type": "STRING",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "AICG3D_SKILLS_ValidateH3Prompt"
+      },
+      "title": "④ 提示词质检",
+      "widgets_values": [
+        "",
+        false
+      ],
+      "widgets_values_named": {
+        "H3提示词": "",
+        "严格模式": false
+      }
+    },
+    {
+      "id": 105,
+      "type": "PreviewAny",
+      "pos": [
+        1950,
+        160
+      ],
+      "size": [
+        400,
+        300
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "source",
+          "name": "source",
+          "type": "*",
+          "link": 6,
+          "shape": 7
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "STRING",
+          "name": "STRING",
+          "type": "STRING",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "PreviewAny"
+      },
+      "title": "H3提示词",
+      "widgets_values": [],
+      "widgets_values_named": {}
+    },
+    {
+      "id": 106,
+      "type": "PreviewAny",
+      "pos": [
+        1950,
+        500
+      ],
+      "size": [
+        400,
+        300
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "source",
+          "name": "source",
+          "type": "*",
+          "link": 7,
+          "shape": 7
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "STRING",
+          "name": "STRING",
+          "type": "STRING",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "PreviewAny"
+      },
+      "title": "H3请求JSON",
+      "widgets_values": [],
+      "widgets_values_named": {}
+    },
+    {
+      "id": 107,
+      "type": "MarkdownNote",
+      "pos": [
+        100,
+        680
+      ],
+      "size": [
+        350,
+        320
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "title": "使用说明",
+      "properties": {
+        "Node name for S&R": "MarkdownNote"
+      },
+      "widgets_values": [
+        "## AICG3D SKILLS 多参考提示词工作流\n\n1. 在“MiniMax H3 Aicg资源库”上传图片、音频和视频。\n2. 在“提示词模型设置”选择线上 API 或本地模型，保存后关闭。\n3. 在“H3 多参考提示词推理”写一句创意，例如：图1和图2在图3场景打斗。\n4. 运行工作流，查看 H3 提示词和 H3请求JSON；检查节点会给出 H1~H12 质检结果。\n\n资源库会自动整理为 <Picture N>、<Video N>、<Audio N>。图片最多9张、视频3段、音频3段。"
+      ],
+      "widgets_values_named": {
+        "text": "## AICG3D SKILLS 多参考提示词工作流\n\n1. 在“MiniMax H3 Aicg资源库”上传图片、音频和视频。\n2. 在“提示词模型设置”选择线上 API 或本地模型，保存后关闭。\n3. 在“H3 多参考提示词推理”写一句创意，例如：图1和图2在图3场景打斗。\n4. 运行工作流，查看 H3 提示词和 H3请求JSON；检查节点会给出 H1~H12 质检结果。\n\n资源库会自动整理为 <Picture N>、<Video N>、<Audio N>。图片最多9张、视频3段、音频3段。"
+      }
+    }
+  ],
+  "links": [
+    [
+      1,
+      100,
+      0,
+      103,
+      15,
+      "MINIMAX_H3_MEDIA_BUNDLE"
+    ],
+    [
+      2,
+      101,
+      0,
+      103,
+      13,
+      "STRING"
+    ],
+    [
+      3,
+      102,
+      0,
+      103,
+      11,
+      "STRING"
+    ],
+    [
+      4,
+      102,
+      1,
+      103,
+      10,
+      "STRING"
+    ],
+    [
+      5,
+      103,
+      0,
+      104,
+      0,
+      "STRING"
+    ],
+    [
+      6,
+      103,
+      0,
+      105,
+      0,
+      "STRING"
+    ],
+    [
+      7,
+      103,
+      1,
+      106,
+      0,
+      "STRING"
+    ]
+  ],
+  "groups": [
+    {
+      "title": "AICG3D SKILLS 多参考提示词",
+      "bounding": [
+        60,
+        90,
+        2380,
+        970
+      ],
+      "color": "#355",
+      "font_size": 24,
+      "flags": {}
+    }
+  ],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.75,
+      "offset": [
+        0,
+        0
+      ]
+    },
+    "frontendVersion": "1.53.10",
+    "ue_links": [],
+    "links_added_by_ue": []
+  },
+  "version": 0.4
+}

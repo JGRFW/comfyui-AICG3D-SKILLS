@@ -1,0 +1,812 @@
+# Copyright (C) 2026 AICG3D
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""User-facing ComfyUI nodes for comfyui-AICG3D-SKILLS."""
+
+from __future__ import annotations
+
+import base64
+import hashlib
+import io
+import json
+import re
+from typing import Any
+
+from engine import composer, optimizer, skills, validator
+
+CATEGORY = "AICG3D SKILLS"
+MEDIA_BUNDLE_TYPE = "MINIMAX_H3_MEDIA_BUNDLE"
+MODES = tuple(composer.MODE_TO_TASK)
+ASPECTS = tuple(composer.RATIO_VALUES)
+INTENSITIES = tuple(composer.INTENSITY_TEXT)
+OUTPUT_LANGUAGES = ("中文", "English")
+LOCAL_DEVICES = ("cuda", "cpu")
+PROVIDERS = tuple(optimizer.PROVIDERS)
+
+
+def _as_text(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _decode_json(value: Any) -> dict[str, Any]:
+    text = _as_text(value)
+    if not text:
+        return {}
+    try:
+        payload = json.loads(text)
+        return payload if isinstance(payload, dict) else {}
+    except ValueError:
+        return {}
+
+
+def _image_batch_tensor(images: Any, image_index: int = 0) -> Any:
+    if images is None:
+        return None
+    try:
+        if getattr(images, "ndim", 0) == 4:
+            return images[image_index : image_index + 1]
+        if getattr(images, "ndim", 0) == 3:
+            return images.unsqueeze(0)
+    except Exception:
+        return None
+    return None
+
+
+def _image_batch_size(images: Any) -> int:
+    if images is None:
+        return 0
+    try:
+        if getattr(images, "ndim", 0) == 4:
+            return int(images.shape[0])
+        if getattr(images, "ndim", 0) == 3:
+            return 1
+    except Exception:
+        return 0
+    return 0
+
+
+def _tensor_to_data_url(image: Any) -> str:
+    from PIL import Image
+    import numpy as np
+
+    array = image.detach().cpu().float().numpy()
+    while array.ndim > 3 and array.shape[0] == 1:
+        array = array[0]
+    array = np.clip(array * 255.0, 0, 255).astype("uint8")
+    if array.ndim == 3 and array.shape[-1] == 1:
+        array = array[..., 0]
+    buffer = io.BytesIO()
+    Image.fromarray(array).save(buffer, format="PNG")
+    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+    return "data:image/png;base64," + encoded
+
+
+def _attach_images(references: list[dict[str, Any]], images: Any) -> list[dict[str, Any]]:
+    count = _image_batch_size(images)
+    if not count:
+        return references
+    image_refs = [
+        item
+        for item in references
+        if str(item.get("kind") or "image").lower() == "image"
+    ]
+    while len(references) < count:
+        references.append(
+            {
+                "label": f"<Picture {len(references) + 1}>",
+                "kind": "image",
+                "role": "subject_reference",
+                "description": "由 ComfyUI 图片输入自动映射。",
+            }
+        )
+    for index in range(count):
+        target = image_refs[index] if index < len(image_refs) else None
+        if target is None:
+            target = next(
+                (
+                    item
+                    for item in references
+                    if str(item.get("kind") or "image").lower() == "image"
+                    and not item.get("images")
+                ),
+                None,
+            )
+        if target is None:
+            continue
+        target.setdefault("label", f"<Picture {index + 1}>")
+        target["images"] = [_tensor_to_data_url(_image_batch_tensor(images, index))]
+    return references
+def _bundle_items(bundle: Any) -> list[Any]:
+    items = getattr(bundle, "items", None)
+    if isinstance(items, (list, tuple)):
+        return list(items)
+    if isinstance(bundle, (list, tuple)):
+        return list(bundle)
+    return []
+
+
+def _bundle_fields(item: Any) -> tuple[str, Any]:
+    if isinstance(item, dict):
+        return str(item.get("media_type") or item.get("type") or "").lower(), item.get("value")
+    return str(getattr(item, "media_type", "") or "").lower(), getattr(item, "value", None)
+
+
+def _media_value(value: Any, key: str) -> Any:
+    if isinstance(value, dict):
+        return value.get(key)
+    return getattr(value, key, None)
+
+
+def _image_data_urls(value: Any, limit: int = 12) -> list[str]:
+    count = _image_batch_size(value)
+    result = []
+    for index in range(min(count, max(1, limit))):
+        image = _image_batch_tensor(value, index)
+        if image is not None:
+            result.append(_tensor_to_data_url(image))
+    return result
+
+
+def _video_sample_urls(value: Any) -> list[str]:
+    frames = _media_value(value, "images")
+    count = _image_batch_size(frames)
+    if not count:
+        return []
+    result = []
+    for index in list(dict.fromkeys([0, count // 2, count - 1])):
+        image = _image_batch_tensor(frames, index)
+        if image is not None:
+            result.append(_tensor_to_data_url(image))
+    return result
+
+
+def _audio_description(value: Any) -> str:
+    waveform = _media_value(value, "waveform")
+    sample_rate = _media_value(value, "sample_rate")
+    try:
+        samples = int(waveform.shape[-1])
+        duration = samples / max(1, int(sample_rate))
+        return f"音频参考，约 {duration:.2f} 秒，采样率 {int(sample_rate)} Hz；用于参考音色、节奏或声音氛围。"
+    except Exception:
+        return "音频参考，用于参考音色、节奏或声音氛围。"
+
+
+def _references_from_media_bundle(bundle: Any) -> list[dict[str, Any]]:
+    """Adapt MiniMaxH3MediaBundle-like objects to the Skill reference schema."""
+    references: list[dict[str, Any]] = []
+    image_count = 0
+    video_count = 0
+    audio_count = 0
+    total = 0
+    for item in _bundle_items(bundle):
+        media_type, value = _bundle_fields(item)
+        if total >= 12:
+            break
+        if media_type == "image" and image_count < 9:
+            urls = _image_data_urls(value, limit=9 - image_count)
+            for url in urls:
+                image_count += 1
+                total += 1
+                references.append(
+                    {
+                        "label": f"<Picture {image_count}>",
+                        "kind": "image",
+                        "role": "subject_reference" if image_count < 3 else ("scene_reference" if image_count == 3 else "reference"),
+                        "description": (
+                            f"AICG3D 资源库图片 {image_count}，作为主体参考，用于锁定形象、服装、姿态或动作状态。"
+                            if image_count < 3 else (
+                                f"AICG3D 资源库图片 {image_count}，作为场景参考，用于锁定空间与构图。"
+                                if image_count == 3 else f"AICG3D 资源库图片 {image_count}，作为补充参考。"
+                            )
+                        ),
+                        "images": [url],
+                    }
+                )
+                if total >= 12:
+                    break
+        elif media_type == "video" and video_count < 3:
+            video_count += 1
+            total += 1
+            fps = _media_value(value, "fps")
+            frames = _media_value(value, "images")
+            frame_count = _image_batch_size(frames)
+            duration = frame_count / float(fps) if fps and frame_count else 0
+            references.append(
+                {
+                    "label": f"<Video {video_count}>",
+                    "kind": "video",
+                    "role": "motion_reference",
+                    "description": f"AICG3D 资源库视频 {video_count}，约 {duration:.2f} 秒，用于锁动作、节奏、运镜或视频续写；不复制原视频中的对白与音乐。",
+                    "images": _video_sample_urls(value),
+                }
+            )
+        elif media_type == "audio" and audio_count < 3:
+            audio_count += 1
+            total += 1
+            references.append(
+                {
+                    "label": f"<Audio {audio_count}>",
+                    "kind": "audio",
+                    "role": "audio_reference",
+                    "description": _audio_description(value),
+                    "labelOnly": True,
+                }
+            )
+    return references
+
+
+def _reference_media(references: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for index, item in enumerate(references, start=1):
+        kind = str(item.get("kind") or "image").lower()
+        label = str(item.get("label") or f"<Picture {index}>")
+        entry: dict[str, Any] = {
+            "label": label,
+            "kind": kind,
+            "role": item.get("role") or "reference",
+            "description": item.get("description") or "",
+        }
+        if kind == "image":
+            entry["images"] = list(item.get("images") or [])
+            if not entry["images"]:
+                entry["labelOnly"] = True
+        elif kind == "video":
+            entry["images"] = list(item.get("images") or [])
+            path = str(item.get("path") or item.get("filename") or "").strip()
+            if path:
+                entry["source_name"] = path
+            else:
+                entry["labelOnly"] = not entry["images"]
+        elif kind == "audio":
+            entry["labelOnly"] = True
+        result.append(entry)
+    return result
+
+
+def _strip_media_binary(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result = []
+    for item in items:
+        clean = {key: value for key, value in item.items() if key not in {"images", "image"}}
+        if item.get("images"):
+            clean["image_count"] = len(item["images"])
+        result.append(clean)
+    return result
+
+
+def _config_ready(config: dict[str, Any]) -> bool:
+
+
+    if config.get("mode") == "local":
+        return bool(str(config.get("local_model") or "").strip())
+    if str(config.get("provider") or "") == "runninghub":
+        return bool(str(config.get("api_key") or "").strip())
+    return bool(
+        str(config.get("api_url") or "").strip()
+        and str(config.get("model") or "").strip()
+        and str(config.get("api_key") or "").strip()
+    )
+
+
+class AICG3DSkillSettings:
+    CATEGORY = CATEGORY
+    FUNCTION = "run"
+    RETURN_TYPES = ("STRING", "STRING", "STRING")
+    RETURN_NAMES = ("设置JSON", "模型列表JSON", "状态")
+    DESCRIPTION = "集中设置线上 API 或本地模型。保存后整个 AICG3D SKILLS 插件共用，无需每个节点重复填写。"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        current = optimizer.load_config()
+        return {
+            "required": {
+                "运行方式": (
+                    ["api", "local"],
+                    {
+                        "default": current.get("mode", "api"),
+                        "tooltip": "api：调用 OpenAI 兼容接口、Gemini 或 RunningHub；local：读取 ComfyUI/models/llm 下的本地视觉模型。",
+                    },
+                ),
+                "线上服务": (
+                    list(PROVIDERS),
+                    {
+                        "default": current.get("provider", "runninghub"),
+                        "tooltip": "选择后会自动填入常用 API 地址和默认模型；仍可在右键设置面板中覆盖。",
+                    },
+                ),
+                "API地址": (
+                    "STRING",
+                    {"default": current.get("api_url", ""), "tooltip": "OpenAI 兼容服务填写到 /v1，插件自动拼接 /chat/completions。"},
+                ),
+                "模型名称": (
+                    "STRING",
+                    {"default": current.get("model", ""), "tooltip": "线上模型 ID，例如 qwen-vl-max、gpt-4.1-mini 或 RunningHub 模型名。"},
+                ),
+                "本地模型": (
+                    "STRING",
+                    {"default": current.get("local_model", ""), "tooltip": "models/llm 下的相对路径；留空则使用设置面板选择。"},
+                ),
+                "GPU或CPU": (
+                    list(LOCAL_DEVICES),
+                    {"default": current.get("local_device", "cuda"), "tooltip": "本地 Transformers 模型的运行设备；GGUF 由 llama.cpp 自行分配。"},
+                ),
+                "输出语言": (
+                    list(OUTPUT_LANGUAGES),
+                    {"default": current.get("output_language", "中文"), "tooltip": "提示词自然语言输出语言；对白仍保留用户原文和原语言。"},
+                ),
+                "读取参考图": (
+                    "BOOLEAN",
+                    {"default": bool(current.get("read_media", True)), "tooltip": "开启后，线上或本地视觉模型会读取已连接的参考图。"},
+                ),
+            },
+            "optional": {
+                "模型设置JSON": (
+                    "STRING",
+                    {
+                        "multiline": True,
+                        "default": "",
+                        "tooltip": "可由上游节点覆盖设置；留空使用保存的全局设置。",
+                    },
+                ),
+            },
+        }
+
+    def run(self, **kwargs):
+        incoming = _decode_json(kwargs.get("模型设置JSON"))
+        if not incoming:
+            current = optimizer.load_config()
+            incoming = {
+                **current,
+                "mode": kwargs.get("运行方式") or current.get("mode", "api"),
+                "provider": kwargs.get("线上服务") or current.get("provider", "runninghub"),
+                "api_url": kwargs.get("API地址") or current.get("api_url", ""),
+                "model": kwargs.get("模型名称") or current.get("model", ""),
+                "local_model": kwargs.get("本地模型") or current.get("local_model", ""),
+                "local_device": kwargs.get("GPU或CPU") or current.get("local_device", "cuda"),
+                "output_language": kwargs.get("输出语言") or current.get("output_language", "中文"),
+                "read_media": bool(kwargs.get("读取参考图", current.get("read_media", True))),
+            }
+        provider = str(incoming.get("provider") or "runninghub")
+        preset = optimizer.PROVIDERS.get(provider)
+        if preset:
+            incoming.setdefault("api_url", preset[0])
+            incoming.setdefault("model", preset[1])
+            incoming.setdefault("protocol", preset[2])
+        saved = optimizer.save_config(incoming)
+        public = optimizer.public_config(saved)
+        models = {
+            "models": optimizer.scan_local_models(),
+            "missing_dependencies": optimizer.missing_local_dependencies(),
+            "gguf_dependency": optimizer.gguf_dependency_status(),
+        }
+        return (
+            json.dumps(public, ensure_ascii=False, indent=2),
+            json.dumps(models, ensure_ascii=False, indent=2),
+            "设置已保存；线上 API 密钥请在节点面板的“模型设置”按钮中填写。",
+        )
+
+
+class AICG3DSkillSelector:
+    CATEGORY = CATEGORY
+    FUNCTION = "run"
+    RETURN_TYPES = ("STRING", "STRING", "STRING")
+    RETURN_NAMES = ("技能包ID", "技能重点", "技能说明")
+    DESCRIPTION = "选择本次提示词要强化的导演能力。输出可直接接到主节点的“技能重点”或“技能包”输入；普通任务也可只使用主节点下拉框。"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        items = skills.discover()
+        choices = [item["name"] for item in items] or [skills.selection_label(skills.default_skill_id())]
+        return {
+            "required": {
+                "技能包": (
+                    choices,
+                    {"default": skills.selection_label(skills.default_skill_id()), "tooltip": "选择要使用的 Skill；普通任务保留内置 MiniMax H3 短剧导演 Skill。"},
+                ),
+                "导演重点": (
+                    skills.selection_options(),
+                    {
+                        "default": "自动选择",
+                        "tooltip": "战斗选“战斗导演”；对白选“文戏表演”；连续长片选“段缝连续性”。",
+                    },
+                ),
+            }
+        }
+
+    def run(self, **kwargs):
+        requested = _as_text(kwargs.get("技能包")) or skills.default_skill_id()
+        item = skills.get(requested)
+        selected = item["id"] if item else skills.default_skill_id()
+        focus = _as_text(kwargs.get("导演重点")) or "自动选择"
+        description = item["description"] if item else ""
+        return selected, focus, description
+
+
+class AICG3DSkillManager:
+    CATEGORY = CATEGORY
+    FUNCTION = "run"
+    RETURN_TYPES = ("STRING", "STRING", "STRING")
+    RETURN_NAMES = ("当前技能包ID", "技能列表JSON", "状态")
+    DESCRIPTION = "浏览 skills/ 目录里的全部 Skill；点击节点上的“选择 / 管理技能”可按中文用途搜索、套用、导入 ZIP、刷新或删除技能。"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        choices = skills.selection_labels() or [skills.selection_label(skills.default_skill_id())]
+        return {
+            "required": {
+                "当前技能": (
+                    choices,
+                    {"default": skills.selection_label(skills.default_skill_id()), "tooltip": "点击节点上的“选择 / 管理技能”可按中文用途搜索；也支持刷新列表、导入 ZIP 或删除非内置 Skill。"},
+                ),
+            }
+        }
+
+    def run(self, **kwargs):
+        requested = _as_text(kwargs.get("当前技能")) or skills.default_skill_id()
+        item = skills.get(requested)
+        selected = item["id"] if item else skills.default_skill_id()
+        return selected, json.dumps(skills.payload(), ensure_ascii=False, indent=2), "Skill 管理器节点可用；点击节点上的 Skill 管理按钮导入、刷新或删除。"
+
+
+class AICG3DMediaReferences:
+    CATEGORY = CATEGORY
+    FUNCTION = "run"
+    RETURN_TYPES = ("STRING", "STRING", "INT")
+    RETURN_NAMES = ("参考素材JSON", "素材目录", "图片数量")
+    DESCRIPTION = "把一批参考图、视频文件、音频文件和用途整理成 H3 的 Picture/Video/Audio 标签，输出给提示词主节点。"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "用途顺序": (
+                    "STRING",
+                    {
+                        "multiline": True,
+                        "default": "主体,主体,场景",
+                        "tooltip": "按图片顺序填写：主体、场景、道具、首帧、尾帧、构图。也支持逗号或换行分隔。",
+                    },
+                ),
+                "视频文件": (
+                    "STRING",
+                    {
+                        "multiline": True,
+                        "default": "",
+                        "tooltip": "每行一个视频文件名或路径；只用于告诉提示词模型这段视频的作用，不会自动上传。",
+                    },
+                ),
+                "音频文件": (
+                    "STRING",
+                    {
+                        "multiline": True,
+                        "default": "",
+                        "tooltip": "每行一个音频文件名或路径，用于音色、节奏或音频复用说明。",
+                    },
+                ),
+            },
+            "optional": {
+                "参考图片": (
+                    "IMAGE",
+                    {"tooltip": "可接一张或一批图片；批内每个画面自动映射为 <Picture 1>、<Picture 2>……"},
+                ),
+                "补充说明": (
+                    "STRING",
+                    {
+                        "multiline": True,
+                        "default": "",
+                        "tooltip": "说明每张图锁定什么，例如“图1锁主角形象，图2锁对手，图3锁场景”。",
+                    },
+                ),
+            },
+        }
+
+    def run(self, **kwargs):
+        references: list[dict[str, Any]] = []
+        images = kwargs.get("参考图片")
+        count = _image_batch_size(images)
+        roles = [
+            part.strip()
+            for part in re.split(r"[,，\n|｜]", _as_text(kwargs.get("用途顺序")))
+            if part.strip()
+        ]
+        descriptions = _as_text(kwargs.get("补充说明"))
+        for index in range(count):
+            role = roles[index] if index < len(roles) else ("场景" if index == 2 else "主体")
+            references.append(
+                {
+                    "label": f"<Picture {index + 1}>",
+                    "kind": "image",
+                    "role": "scene_reference" if "场景" in role else ("keyframe" if "帧" in role or "构图" in role else "subject_reference"),
+                    "description": f"{role}参考。{descriptions}",
+                    "images": [_tensor_to_data_url(_image_batch_tensor(images, index))],
+                }
+            )
+        for index, line in enumerate([line for line in _as_text(kwargs.get("视频文件")).splitlines() if line.strip()], start=1):
+            path = line.strip()
+            references.append(
+                {
+                    "label": f"<Video {index}>",
+                    "kind": "video",
+                    "role": "motion_reference",
+                    "description": "用于锁定动作、节奏或运镜；不复制原视频事件。",
+                    "path": path,
+                }
+            )
+        for index, line in enumerate([line for line in _as_text(kwargs.get("音频文件")).splitlines() if line.strip()], start=1):
+            path = line.strip()
+            references.append(
+                {
+                    "label": f"<Audio {index}>",
+                    "kind": "audio",
+                    "role": "audio_reference",
+                    "description": "用于参考音色或节奏；必须与图像或视频共同使用。",
+                    "path": path,
+                }
+            )
+        catalog = "\n".join(
+            f"{item['label']} | {item.get('kind')} | {item.get('role')} | {item.get('description', '')}"
+            for item in references
+        )
+        return json.dumps({"references": references}, ensure_ascii=False, indent=2), catalog, count
+
+
+class AICG3DSkillPromptExpander:
+    CATEGORY = CATEGORY
+    FUNCTION = "run"
+
+    @classmethod
+    def IS_CHANGED(cls, **kwargs):
+        config = kwargs.get("模型设置JSON") or json.dumps(optimizer.load_config(), ensure_ascii=False, sort_keys=True)
+        catalog = json.dumps(skills.payload(), ensure_ascii=False, sort_keys=True)
+        return hashlib.sha256(f"{config}|{catalog}".encode("utf-8")).hexdigest()
+    RETURN_TYPES = ("STRING", "STRING", "STRING")
+    RETURN_NAMES = ("H3提示词", "H3请求JSON", "运行状态")
+    DESCRIPTION = (
+        "主节点。最简用法：只填写“创意描述”，选择一个“技能包”，然后运行。"
+        "截图中的四个项目是高级连线条目：参考素材JSON 来自“参考素材整理”；"
+        "技能重点输入和技能包输入来自“技能选择器”；模型设置JSON 来自“模型设置”。"
+        "额外要求用于填写必须遵守的自然语言限制。点击节点上的“使用说明”可查看完整填写顺序。"
+    )
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        defaults = optimizer.load_config()
+        return {
+            "required": {
+                "创意描述": (
+                    "STRING",
+                    {
+                        "multiline": True,
+                        "dynamicPrompts": True,
+                        "default": "图1和图2在图3场景打斗",
+                        "tooltip": "可以只写一句。图1、图2自动映射为参考主体，图3自动映射为参考场景。",
+                    },
+                ),
+                "任务模式": (
+                    list(MODES),
+                    {"default": "Ref2VA 全能参考（推荐）", "tooltip": "有角色、场景、道具等多张参考图选 Ref2VA；纯文字选 T2VA。"},
+                ),
+                "输出画幅": (
+                    list(ASPECTS),
+                    {"default": "16:9（横屏）", "tooltip": "H3 支持 21:9、16:9、4:3、1:1、3:4、9:16。"},
+                ),
+                "视频时长": (
+                    "FLOAT",
+                    {"default": 10.0, "min": 4.0, "max": 15.0, "step": 0.5, "tooltip": "MiniMax H3 单段有效时长为 4~15 秒。"},
+                ),
+                "动作强度": (
+                    list(INTENSITIES),
+                    {"default": "R2 商业高燃（默认）", "tooltip": "R2 适合大多数短剧；R1 适合写实文戏；R3 适合玄幻大招。"},
+                ),
+                "技能重点": (
+                    skills.selection_options(),
+                    {"default": "自动选择", "tooltip": "导演侧重点；普通使用保持“自动选择”，也可从“技能选择器”节点连接覆盖。"},
+                ),
+                "技能包": (
+                    skills.selection_labels() or [skills.selection_label(skills.default_skill_id())],
+                    {"default": skills.selection_label(skills.default_skill_id()), "tooltip": "选择要加载的 Skill；建议点击节点上的“选择 / 管理技能”按中文用途搜索。"},
+                ),
+                "输出语言": (
+                    list(OUTPUT_LANGUAGES),
+                    {"default": defaults.get("output_language", "中文"), "tooltip": "自然语言输出语言；对白始终保留原语言。"},
+                ),
+                "无模型时生成模板": (
+                    "BOOLEAN",
+                    {"default": True, "tooltip": "没有配置模型时仍生成结构完整、可继续修改的 H3 六段式草稿。"},
+                ),
+            },
+            "optional": {
+                "参考素材JSON": (
+                    "STRING",
+                    {
+                        "multiline": True,
+                        "default": "",
+                        "forceInput": True,
+                        "tooltip": "高级连线项：连接“参考素材整理”的“参考素材JSON”输出；不连接时自动识别创意里的图1、图2、图3。",
+                    },
+                ),
+                "技能重点输入": (
+                    "STRING",
+                    {"default": "", "forceInput": True, "tooltip": "高级连线项：连接“技能选择器”的“技能重点”输出，覆盖节点上的技能重点。"},
+                ),
+                "技能包输入": (
+                    "STRING",
+                    {"default": "", "forceInput": True, "tooltip": "高级连线项：连接“技能选择器”或“Skill 管理器”的技能包输出，覆盖节点上的技能包。"},
+                ),
+                "额外要求": (
+                    "STRING",
+                    {
+                        "multiline": True,
+                        "default": "",
+                        "tooltip": "例如“角色保持沉默”“结束在双方对峙”“不要添加新人物”。",
+                    },
+                ),
+                "模型设置JSON": (
+                    "STRING",
+                    {
+                        "multiline": True,
+                        "default": "",
+                        "forceInput": True,
+                        "tooltip": "高级连线项：连接“模型设置”的“模型设置JSON”输出；不连接时使用插件全局保存的设置。",
+                    },
+                ),
+                "参考图片": (
+                    "IMAGE",
+                    {"tooltip": "可选。接图片后会自动附加给 H3 参考主体；若已有参考素材JSON则把图片补到对应 Picture 标签。"},
+                ),
+                "AICG3D资源库": (
+                    MEDIA_BUNDLE_TYPE,
+                    {"tooltip": "从 MiniMax H3 Aicg资源库 的 AICG3D 输出接入，支持多图、多视频和多音频。"},
+                ),
+            },
+        }
+
+    def run(self, **kwargs):
+        idea = _as_text(kwargs.get("创意描述")) or "人物在同一空间中展开行动"
+        mode = _as_text(kwargs.get("任务模式")) or "Ref2VA 全能参考（推荐）"
+        aspect = _as_text(kwargs.get("输出画幅")) or "16:9（横屏）"
+        duration = float(kwargs.get("视频时长") or 10.0)
+        intensity = _as_text(kwargs.get("动作强度")) or "R2 商业高燃（默认）"
+        focus = _as_text(kwargs.get("技能重点输入")) or _as_text(kwargs.get("技能重点")) or "自动选择"
+        skill_id = _as_text(kwargs.get("技能包输入")) or _as_text(kwargs.get("技能包")) or skills.default_skill_id()
+        extra = _as_text(kwargs.get("额外要求"))
+        output_language = _as_text(kwargs.get("输出语言")) or "中文"
+        fallback_enabled = bool(kwargs.get("无模型时生成模板", True))
+        config = _decode_json(kwargs.get("模型设置JSON")) or optimizer.load_config()
+        config["output_language"] = output_language
+
+        bundle_references = _references_from_media_bundle(kwargs.get("AICG3D资源库"))
+        if bundle_references:
+            references = bundle_references
+        else:
+            references = composer.parse_reference_catalog(_as_text(kwargs.get("参考素材JSON")))
+            if not references:
+                references = composer.infer_idea_references(idea)
+            references = _attach_images(references, kwargs.get("参考图片"))
+
+        context, used_references, selected_skill_id = skills.build_context(
+            idea,
+            focus,
+            skill_id,
+            max_chars=18000 if config.get("mode") == "local" else 56000,
+        )
+        node_prompt = composer.build_node_prompt(
+            idea,
+            mode,
+            aspect,
+            duration,
+            intensity,
+            focus,
+            context,
+            references,
+            extra,
+        )
+        request_payload = {
+            "task": composer.MODE_TO_TASK.get(mode, "Ref2VA"),
+            "skill_id": selected_skill_id,
+            "aspect_ratio": composer.RATIO_VALUES.get(aspect, "16:9"),
+            "duration_seconds": duration,
+            "prompt": node_prompt,
+            "media": _reference_media(references),
+            "context": {},
+            "system": context,
+        }
+        status = ""
+        try:
+            if not _config_ready(config):
+                raise RuntimeError("尚未配置线上 API 或本地模型")
+            prompt = optimizer.generate_prompt_sync(
+                config,
+                {
+                    "task": request_payload["task"],
+                    "duration": duration,
+                    "prompt": node_prompt,
+                    "media": request_payload["media"],
+                    "context": {},
+                    "system": context,
+                },
+            )
+            status = f"已使用{'本地模型' if config.get('mode') == 'local' else config.get('provider') or '线上 API'}生成；加载 {len(used_references)} 份 Skill 规则。"
+            quality = validator.validate_h3(prompt)
+            severe = any(str(item).startswith(("H1", "H8")) for item in quality.get("issues") or [])
+            if severe or len(str(prompt)) > 30000:
+                prompt = composer.build_fallback(idea, mode, aspect, duration, intensity, references)
+                status += " 模型结果结构异常，已自动修复为可用的 H3 六段式草稿。"
+        except Exception as error:
+            if not fallback_enabled:
+                raise RuntimeError(f"H3 提示词生成失败：{error}") from error
+            prompt = composer.build_fallback(idea, mode, aspect, duration, intensity, references)
+            status = f"模型未调用：{error}。已输出结构完整的离线 H3 草稿。"
+
+        request_payload["references"] = references
+        request_payload["skill_references"] = used_references
+        request_payload["config_used"] = {
+            "mode": config.get("mode"),
+            "provider": config.get("provider"),
+            "model": config.get("model"),
+            "local_model": config.get("local_model"),
+        }
+        public_payload = dict(request_payload)
+        public_payload["media"] = _strip_media_binary(request_payload.get("media") or [])
+        public_payload["references"] = _strip_media_binary(request_payload.get("references") or [])
+        return prompt, json.dumps(public_payload, ensure_ascii=False, indent=2), status
+
+
+class AICG3DValidateH3Prompt:
+    CATEGORY = CATEGORY
+    FUNCTION = "run"
+    RETURN_TYPES = ("STRING", "STRING", "STRING")
+    RETURN_NAMES = ("检查结果", "问题清单", "警告清单")
+    DESCRIPTION = "检查 H3 三字段/Ref2VA 六段式、镜号时间、素材引用、对白、声音分层和首镜锚定。"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "H3提示词": (
+                    "STRING",
+                    {"multiline": True, "default": "", "tooltip": "可接主节点的“H3提示词”输出，也可以直接粘贴提示词。"},
+                ),
+                "严格模式": (
+                    "BOOLEAN",
+                    {"default": False, "tooltip": "开启后只要存在 FAIL 就中断工作流；关闭时只输出检查结果。"},
+                ),
+            }
+        }
+
+    def run(self, **kwargs):
+        text = _as_text(kwargs.get("H3提示词"))
+        result = validator.validate_h3(text)
+        issues = result.get("issues") or []
+        warnings = result.get("warnings") or []
+        if bool(kwargs.get("严格模式")) and issues:
+            raise RuntimeError("H3 提示词检查失败：\n" + "\n".join(str(item) for item in issues))
+        status = "通过" if not issues else f"发现 {len(issues)} 个错误"
+        if warnings:
+            status += f"，{len(warnings)} 个警告"
+        summary = {
+            "result": status,
+            "stats": result.get("stats") or {},
+        }
+        return (
+            json.dumps(summary, ensure_ascii=False, indent=2),
+            "\n".join(str(item) for item in issues),
+            "\n".join(str(item) for item in warnings),
+        )
+
+
+NODE_CLASS_MAPPINGS = {
+    "AICG3D_SKILLS_Settings": AICG3DSkillSettings,
+    "AICG3D_SKILLS_SkillSelector": AICG3DSkillSelector,
+    "AICG3D_SKILLS_SkillManager": AICG3DSkillManager,
+    "AICG3D_SKILLS_MediaReferences": AICG3DMediaReferences,
+    "AICG3D_SKILLS_PromptExpander": AICG3DSkillPromptExpander,
+    "AICG3D_SKILLS_ValidateH3Prompt": AICG3DValidateH3Prompt,
+}
+
+NODE_DISPLAY_NAME_MAPPINGS = {
+    "AICG3D_SKILLS_Settings": "AICG3D SKILLS · 模型设置",
+    "AICG3D_SKILLS_SkillSelector": "AICG3D SKILLS · 技能选择器",
+    "AICG3D_SKILLS_SkillManager": "AICG3D SKILLS · Skill 管理器",
+    "AICG3D_SKILLS_MediaReferences": "AICG3D SKILLS · 参考素材整理",
+    "AICG3D_SKILLS_PromptExpander": "AICG3D SKILLS · H3 提示词推理",
+    "AICG3D_SKILLS_ValidateH3Prompt": "AICG3D SKILLS · H3 提示词检查",
+}

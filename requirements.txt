@@ -1,0 +1,4 @@
+# The plugin uses ComfyUI's bundled Python. Local visual inference is optional.
+aiohttp
+Pillow
+numpy

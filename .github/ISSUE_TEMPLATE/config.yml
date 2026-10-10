@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 安全漏洞
+    url: https://github.com/JGRFW/comfyui-AICG3D-SKILLS/security/advisories/new
+    about: 请使用私密安全报告，不要在公开 Issue 发布漏洞细节或凭据。
+  - name: 版权或隐私问题
+    url: https://github.com/JGRFW/comfyui-AICG3D-SKILLS/issues
+    about: 请勿公开发布身份证件、私人媒体、住址或其他敏感资料。

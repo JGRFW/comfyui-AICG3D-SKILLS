@@ -1,0 +1,45 @@
+name: Bug report
+description: 报告可复现的插件问题
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请先删除日志中的 API Key、Cookie、用户资料、私人路径和未授权媒体。
+  - type: input
+    id: version
+    attributes:
+      label: 插件版本
+      placeholder: 例如 1.2.0
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: 问题描述
+      description: 发生了什么，预期是什么？
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      placeholder: 1. 打开工作流... 2. 点击... 3. 出现...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 脱敏日志
+      description: 不要包含密钥、个人信息或版权不明媒体。
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 确认
+      options:
+        - label: 我已删除 API Key、Cookie 和个人信息。
+          required: true
+        - label: 我已确认问题不涉及未授权媒体、真人隐私或侵权内容。
+          required: true

@@ -1,0 +1,31 @@
+name: Feature request
+description: 提议新功能或改进
+title: "[Feature] "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: 使用场景
+      description: 谁在什么情况下需要这个功能？
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 建议方案
+    validations:
+      required: true
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: 兼容性与风险
+      description: 是否影响旧工作流、第三方 Skill、模型许可证或素材权利？
+  - type: checkboxes
+    id: legal
+    attributes:
+      label: 合规确认
+      options:
+        - label: 提议不依赖未授权素材、真人隐私或侵权内容。
+          required: true

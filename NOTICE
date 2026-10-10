@@ -1,0 +1,13 @@
+# NOTICE
+
+本项目包含自有代码、第三方 Skill、第三方许可证文本和远程预览链接。
+
+- 自有插件代码：GPL-3.0-or-later。
+- 默认短剧导演 Skill：MIT。
+- T8 Creative DNA Skill：代码 MIT；原创摘要、Creative DNA 与提示词模板 CC BY 4.0。
+- character-refs Skill：Apache-2.0，作者标识 X：`@eternityspring`。
+- Goohai 上游组件：GPL-3.0-or-later。
+- 预览媒体不随本项目重新许可，权利归原作者和来源平台。
+- 两个作者和许可证未确认的本地 Skill 已于 2026-10-10 移除，不随本项目分发。
+
+完整说明见 `THIRD_PARTY_NOTICES.md`、`ACKNOWLEDGEMENTS.md`、`DISCLAIMER.md` 和 `docs/` 目录。第三方名称、品牌、角色、模型和媒体不代表本项目获得背书或授权。

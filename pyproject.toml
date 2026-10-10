@@ -1,0 +1,24 @@
+[project]
+name = "comfyui-aicg3d-skills"
+description = "Standalone MiniMax H3 Skill prompt expansion nodes for ComfyUI."
+version = "1.2.0"
+license = "GPL-3.0-or-later"
+license-files = [
+    "LICENSE",
+    "NOTICE",
+    "THIRD_PARTY_NOTICES.md",
+    "skills/T8-LICENSE.txt",
+    "skills/T8-LICENSE-CONTENT.txt",
+    "skills/character-refs/LICENSE",
+    "skills/minimax-h3-short-drama-director/LICENSE",
+    "third_party/LICENSE-Goohai-MiniMax-H3_Integration-GPL-3.0-or-later.txt",
+]
+dependencies = []
+
+[tool.comfy]
+PublisherId = "aicg3d"
+DisplayName = "AICG3D SKILLS"
+Icon = ""
+
+[project.urls]
+Repository = "https://github.com/JGRFW/comfyui-AICG3D-SKILLS"
