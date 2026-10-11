@@ -5,6 +5,13 @@
 
 独立的 ComfyUI 提示词插件。它把“漫剧老李 AIGC 创作全流程 Skill”适配为 MiniMax H3 版本，用一个主节点把简单创意扩展成 H3 可投喂提示词。
 
+## v1.2.2 更新摘要
+
+- 新增 `AICG3D SKILLS · 视频台词识别`，从原视频音轨识别真实台词、时间码和说话人映射。
+- `台词时间线` 可直接接入 H3 提示词推理主节点，按 `S1/S2 -> Picture/Subject` 写入 Ref2VA 对白。
+- 人物场景替换 Skill 增加口型、语言、说话顺序和原音轨复用规则。
+- 运行时清除模型自行编造的 `<d>` 对白，只保留用户或识别节点提供的逐字文本。
+
 ## v1.2.1 更新摘要
 
 - 将 9 个 Skill 的用户可见名称、短说明和演示提示词从 Seedance 统一改为 MiniMax H3。
@@ -36,6 +43,7 @@
 | `AICG3D SKILLS · Skill 管理器` | 浏览、搜索、套用、导入或删除 Skill；T8 Skill 使用中文名称和中文用途说明。 |
 | `AICG3D SKILLS · 参考素材整理` | 把图片、视频、音频整理成 H3 标签和用途说明。 |
 | `AICG3D SKILLS · H3 提示词推理` | 主节点，调用模型并生成 H3 提示词。 |
+| `AICG3D SKILLS · 视频台词识别` | 从 AUDIO 识别真实台词、时间码和 S1/S2 说话人，输出可接入主节点的台词时间线。 |
 | `AICG3D SKILLS · H3 提示词检查` | 运行 H1~H12 质量检查。 |
 
 ## 安装
@@ -65,6 +73,7 @@ ComfyUI/custom_nodes/comfyui-AICG3D-SKILLS
 4. 如有参考图片，把它们接到“参考素材整理”，再把 JSON 接到主节点。
 5. 运行工作流，读取 `H3提示词` 输出。
 6. 可选：把提示词接到检查节点，先看问题和警告。
+7. 需要数字人口型或原对白复用时：视频原音轨 → `视频台词识别` → `台词时间线` 接到主节点；多人时在“说话人时间轴”填写 `S1 = Picture 1 | 0.00-1.25`。
 
 ## 主节点字段说明
 
@@ -103,6 +112,12 @@ skills/my-skill/package-name/SKILL.md
 默认内置 `minimax-h3-short-drama-director`，并已加入 T8 Creative DNA 的 284 个 Skill。点击主节点或“技能选择器”的“选择 / 管理技能”，可以按中文名称、中文用途和英文 ID 搜索，再点“使用”套到当前节点。
 
 Skill 管理器仍支持导入 ZIP、刷新列表和删除非内置 Skill。也可以在文件资源管理器里直接增删文件夹，然后刷新列表。内置的 `minimax-h3-short-drama-director` 不允许误删。
+
+## 台词识别依赖
+
+`视频台词识别` 是可选节点。运行前需要 ComfyUI Python 环境能 `import whisper`，并把 Whisper `.pt` 模型放到 `ComfyUI/models/audio_encoders`（也可手动填写模型绝对路径）。节点默认不联网下载模型；打开“允许自动下载模型”后，才会按所选 standard 名称下载。
+
+节点会扫描 `ComfyUI/models/audio_encoders` 和 `ComfyUI/models/whisper`；其他位置已有的 `.pt` 模型可直接把完整路径填到“本地模型路径”。如果本机已有 `pyvideotrans` 等语音工具，可优先复用其中的 `large-v3.pt`，无需重复下载。
 
 ## 本地模型目录
 

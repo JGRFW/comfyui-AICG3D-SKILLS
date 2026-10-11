@@ -1,4 +1,6 @@
 # The plugin uses ComfyUI's bundled Python. Local visual inference is optional.
+# Video dialogue recognition is optional and requires the user's local openai-whisper install.
+# It is intentionally not pinned here to avoid forcing a second ASR runtime on every install.
 aiohttp
 Pillow
 numpy

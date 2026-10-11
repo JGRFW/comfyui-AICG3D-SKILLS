@@ -10,7 +10,7 @@ from aiohttp import web
 
 from engine import composer, optimizer, skills, validator
 
-VERSION = "1.2.1"
+VERSION = "1.2.2"
 PROJECT_NAME = "AICG3D SKILLS"
 _REGISTERED = False
 

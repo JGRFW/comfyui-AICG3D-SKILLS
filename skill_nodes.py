@@ -11,7 +11,7 @@ import json
 import re
 from typing import Any
 
-from engine import composer, optimizer, skills, validator
+from engine import composer, dialogue, optimizer, skills, validator
 
 CATEGORY = "AICG3D SKILLS"
 MEDIA_BUNDLE_TYPE = "MINIMAX_H3_MEDIA_BUNDLE"
@@ -548,6 +548,90 @@ class AICG3DMediaReferences:
         return json.dumps({"references": references}, ensure_ascii=False, indent=2), catalog, count
 
 
+class AICG3DDialogueRecognition:
+    CATEGORY = CATEGORY
+    FUNCTION = "run"
+    RETURN_TYPES = ("STRING", "STRING", "STRING", "STRING")
+    RETURN_NAMES = ("台词JSON", "台词时间线", "台词全文", "运行状态")
+    DESCRIPTION = (
+        "从已连接的视频音轨识别真实台词，输出带时间码和 S1/S2 说话人映射的 H3 台词时间线。"
+        "把“台词时间线”接到 H3 提示词推理节点的同名输入，即可把识别台词写进 Ref2VA 提示词。"
+    )
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "音频": (
+                    "AUDIO",
+                    {
+                        "tooltip": "连接视频中的原音轨 AUDIO。若视频节点只输出 VIDEO，请先用视频加载节点提取音轨。",
+                    },
+                ),
+                "模型": (
+                    dialogue.model_choices(),
+                    {
+                        "default": "small",
+                        "tooltip": "优先选择 ComfyUI/models/audio_encoders 里的 .pt 文件；small 适合先测试，medium/large-v3 中文准确率更高但更慢。",
+                    },
+                ),
+                "本地模型路径": (
+                    "STRING",
+                    {
+                        "default": "",
+                        "tooltip": "可填写 .pt 绝对路径；填写后优先于上面的模型下拉框。",
+                    },
+                ),
+                "语言": (
+                    list(dialogue.LANGUAGE_OPTIONS),
+                    {"default": "自动检测", "tooltip": "尽量填写明确语言，可减少误识别和语言漂移。"},
+                ),
+                "设备": (
+                    ["自动", "cuda", "cpu"],
+                    {"default": "自动", "tooltip": "自动优先使用 CUDA；显存不足时节点会尝试回退到 CPU。"},
+                ),
+                "允许自动下载模型": (
+                    "BOOLEAN",
+                    {"default": False, "tooltip": "关闭时只读取本地模型；打开后，选择 standard Whisper 名称时会下载模型。"},
+                ),
+                "说话人时间轴": (
+                    "STRING",
+                    {
+                        "multiline": True,
+                        "default": "",
+                        "tooltip": "多人对白时每行写一个映射，例如：S1 = Picture 1 | 0.00-1.25；S2 = Picture 2 | 1.25-3.00。单人可以留空，默认全部归入 S1。",
+                    },
+                ),
+                "最大单段秒数": (
+                    "FLOAT",
+                    {"default": 8.0, "min": 1.0, "max": 30.0, "step": 0.5, "tooltip": "相邻同说话人短句会合并到这个上限，避免时间线过碎。"},
+                ),
+                "合并相邻短句": (
+                    "BOOLEAN",
+                    {"default": True, "tooltip": "同一说话人的连续短句自动合并；需要逐句精确时间码时可关闭。"},
+                ),
+            }
+        }
+
+    def run(self, **kwargs):
+        result = dialogue.transcribe_audio(
+            kwargs.get("音频"),
+            model_name=_as_text(kwargs.get("模型")) or "small",
+            local_model_path=_as_text(kwargs.get("本地模型路径")),
+            language_label=_as_text(kwargs.get("语言")) or "自动检测",
+            device_label=_as_text(kwargs.get("设备")) or "自动",
+            auto_download=bool(kwargs.get("允许自动下载模型", False)),
+            speaker_timeline=_as_text(kwargs.get("说话人时间轴")),
+            max_segment_seconds=float(kwargs.get("最大单段秒数") or 8.0),
+            merge_short_segments=bool(kwargs.get("合并相邻短句", True)),
+        )
+        return (
+            result["dialogue_json"],
+            result["timeline"],
+            result["text"],
+            result["status"],
+        )
+
 class AICG3DSkillPromptExpander:
     CATEGORY = CATEGORY
     FUNCTION = "run"
@@ -556,7 +640,10 @@ class AICG3DSkillPromptExpander:
     def IS_CHANGED(cls, **kwargs):
         config = kwargs.get("模型设置JSON") or json.dumps(optimizer.load_config(), ensure_ascii=False, sort_keys=True)
         catalog = json.dumps(skills.payload(), ensure_ascii=False, sort_keys=True)
-        return hashlib.sha256(f"{config}|{catalog}".encode("utf-8")).hexdigest()
+        dialogue_timeline = str(kwargs.get("台词时间线") or "")
+        return hashlib.sha256(
+            f"{config}|{catalog}|{dialogue_timeline}".encode("utf-8")
+        ).hexdigest()
     RETURN_TYPES = ("STRING", "STRING", "STRING")
     RETURN_NAMES = ("H3提示词", "H3请求JSON", "运行状态")
     DESCRIPTION = (
@@ -648,6 +735,14 @@ class AICG3DSkillPromptExpander:
                         "tooltip": "高级连线项：连接“模型设置”的“模型设置JSON”输出；不连接时使用插件全局保存的设置。",
                     },
                 ),
+                "台词时间线": (
+                    "STRING",
+                    {
+                        "default": "",
+                        "forceInput": True,
+                        "tooltip": "连接“视频台词识别”的“台词时间线”输出；识别台词会逐字写入 Ref2VA，并保留时间码和说话人映射。",
+                    },
+                ),
                 "参考图片": (
                     "IMAGE",
                     {"tooltip": "可选。接图片后会自动附加给 H3 参考主体；若已有参考素材JSON则把图片补到对应 Picture 标签。"},
@@ -668,6 +763,14 @@ class AICG3DSkillPromptExpander:
         focus = _as_text(kwargs.get("技能重点输入")) or _as_text(kwargs.get("技能重点")) or "自动选择"
         skill_id = _as_text(kwargs.get("技能包输入")) or _as_text(kwargs.get("技能包")) or skills.default_skill_id()
         extra = _as_text(kwargs.get("额外要求"))
+        dialogue_timeline = _as_text(kwargs.get("台词时间线"))
+        if dialogue_timeline:
+            dialogue_rule = (
+                "原视频台词识别结果（必须逐字使用，不得改写、翻译或新增对白；"
+                "保持时间码、说话人和 Subject/Picture 映射）：\n"
+                + dialogue_timeline
+            )
+            extra = f"{extra}\n\n{dialogue_rule}".strip()
         output_language = _as_text(kwargs.get("输出语言")) or "中文"
         fallback_enabled = bool(kwargs.get("无模型时生成模板", True))
         config = _decode_json(kwargs.get("模型设置JSON")) or optimizer.load_config()
@@ -799,6 +902,7 @@ NODE_CLASS_MAPPINGS = {
     "AICG3D_SKILLS_SkillManager": AICG3DSkillManager,
     "AICG3D_SKILLS_MediaReferences": AICG3DMediaReferences,
     "AICG3D_SKILLS_PromptExpander": AICG3DSkillPromptExpander,
+    "AICG3D_SKILLS_DialogueRecognition": AICG3DDialogueRecognition,
     "AICG3D_SKILLS_ValidateH3Prompt": AICG3DValidateH3Prompt,
 }
 
@@ -808,5 +912,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "AICG3D_SKILLS_SkillManager": "AICG3D SKILLS · Skill 管理器",
     "AICG3D_SKILLS_MediaReferences": "AICG3D SKILLS · 参考素材整理",
     "AICG3D_SKILLS_PromptExpander": "AICG3D SKILLS · H3 提示词推理",
+    "AICG3D_SKILLS_DialogueRecognition": "AICG3D SKILLS · 视频台词识别",
     "AICG3D_SKILLS_ValidateH3Prompt": "AICG3D SKILLS · H3 提示词检查",
 }

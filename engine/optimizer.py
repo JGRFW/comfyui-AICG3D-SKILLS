@@ -1325,6 +1325,18 @@ def _extract_explicit_dialogues(prompt: str) -> list[tuple[str, str]]:
     """Extract only dialogue that the user explicitly supplied, preserving its exact text."""
     source = str(prompt or "")
     candidates = []
+    for match in re.finditer(
+        r"<d>\s*(?:\[([^\]]+)\]\s*)?(.*?)\s*</d>",
+        source,
+        flags=re.IGNORECASE | re.DOTALL,
+    ):
+        value = re.sub(r"\s+", " ", match.group(2) or "").strip().strip("“”‘’\"'").strip()
+        if not value:
+            continue
+        language = (match.group(1) or "").strip() or (
+            "Chinese" if re.search(r"[\u3400-\u9fff]", value) else "English"
+        )
+        candidates.append((value, language))
     speech_marker = r"(?:说|说道|说着|喊|喊道|问|问道|回答|答道|台词|对白|says?|speaks?|shouts?|asks?|replies?)"
     patterns = (
         rf"{speech_marker}[^\n“”‘’\"']{{0,20}}[：:]?\s*[“\"]([^”\"\n]+)[”\"]",
@@ -1341,6 +1353,35 @@ def _extract_explicit_dialogues(prompt: str) -> list[tuple[str, str]]:
             candidates.append((value, language))
     return candidates
 
+
+def _remove_unsupplied_dialogues(text: str, user_prompt: str) -> str:
+    """Drop model-invented <d> blocks while preserving user-supplied dialogue."""
+    def canonical(value: str) -> str:
+        return re.sub(r"\s+", "", str(value or "")).strip().strip("“”‘’\"'")
+
+    supplied_keys = {
+        canonical(value)
+        for value, _language in _extract_explicit_dialogues(user_prompt)
+        if canonical(value)
+    }
+    value = str(text or "")
+
+    def replace(match):
+        body = match.group(1)
+        plain = re.sub(r"^\s*\[[^\]]+\]\s*", "", body).strip()
+        if plain and canonical(plain) in supplied_keys:
+            return match.group(0)
+        return ""
+
+    value = re.sub(r"<d>(.*?)</d>", replace, value, flags=re.IGNORECASE | re.DOTALL)
+    value = re.sub(
+        r"(?i)(?:the\s+)?(?:on-screen\s+speaker|speaker|character)?\s*\(S\d+\)?\s*"
+        r"(?:says?|speaks?|shouts?|asks?|replies?|说|说道|开口说)\s*[:：]?\s*",
+        " maintains the original speaking motion, lip-sync, and mouth timing. ",
+        value,
+    )
+    value = re.sub(r"[ \t]{2,}", " ", value)
+    return value
 
 def _ensure_supplied_dialogues(text: str, user_prompt: str, output_language: str) -> str:
     """Keep supplied dialogue exactly once and inside the main shot timeline."""
@@ -1765,6 +1806,7 @@ def generate_prompt_sync(config: dict | None, payload: dict) -> str:
         str(payload.get("prompt") or ""),
         str(normalized.get("output_language") or "English"),
     )
+    formatted = _remove_unsupplied_dialogues(formatted, str(payload.get("prompt") or ""))
     return _sanitize_h3_output(_normalize_subject_shorthand(formatted))
 
 
@@ -1860,6 +1902,7 @@ async def optimize_prompt(request):
             str(payload.get("prompt") or ""),
             str(config.get("output_language") or "English"),
         )
+        formatted = _remove_unsupplied_dialogues(formatted, str(payload.get("prompt") or ""))
         formatted = _sanitize_h3_output(_normalize_subject_shorthand(formatted))
         return web.json_response({"prompt": formatted})
     except asyncio.CancelledError:
@@ -1909,4 +1952,3 @@ def register_prompt_optimizer_routes() -> bool:
 
 
 register_prompt_optimizer_routes()
-
