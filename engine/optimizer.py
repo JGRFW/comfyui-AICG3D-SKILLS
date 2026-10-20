@@ -927,8 +927,63 @@ def _system_prompt(
     user_prompt: str = "",
 ) -> str:
     task_upper = task.upper()
+    language_rule = (
+        "Write the final answer in Simplified Chinese."
+        if str(output_language or "").lower().startswith(("zh", "chinese", "中文"))
+        else f"Write the final answer in {output_language or 'English'}."
+    )
+    direct_rule = (
+        "Return only the final prompt text that can be copied and pasted directly. "
+        "Do not include introductions, summaries, analysis, explanations, notes, quality checks, usage advice, "
+        "follow-up questions, markdown fences, bullet lists, or extra headings. "
+        "Only MiniMax H3 tasks may use the required H3 section names. "
+    )
+    if task_upper == "IMAGE_REVERSE":
+        return (
+            "You are an expert visual prompt analyst. Follow the attached Skill instructions exactly. "
+            "Analyze the supplied image evidence silently, then return only one complete natural-language image-generation prompt. "
+            "Integrate the useful subject, appearance, action, environment, composition, camera, lighting, color, material, "
+            "and style details into one directly pasteable paragraph. Do not output an introduction, reverse summary, "
+            "structured breakdown, reference-role explanation, uncertainty list, exclusion list, analysis, or usage advice. "
+            "Silently replace rights-sensitive identities, logos, protected characters, watermarks, and visible text with neutral "
+            "descriptions. Do not invent unseen people, props, text, brands, or story events. "
+            + direct_rule + language_rule
+        )
+    if task_upper == "VIDEO_REVERSE":
+        return (
+            "You are an expert audiovisual reverse-prompt analyst. Follow the attached Skill instructions exactly. "
+            "Analyze the supplied video evidence silently and return only a copy-ready MiniMax H3 Ref2VA prompt "
+            "containing exactly subject_definitions, summary, retention_analysis, detailed_description, "
+            "overall_soundscape, and non_diegetic_music in that order. "
+            "Do not append a shot timeline, reverse summary, analysis notes, uncertainty list, compliance notes, "
+            "usage advice, or any text after non_diegetic_music. "
+            "Silently convert source-specific people, brands, dialogue, music, protected characters, logos, and signature "
+            "shots into neutral reusable descriptions. Omit details that cannot be established from the supplied evidence. "
+            + direct_rule + language_rule
+        )
+    if task_upper == "T2I":
+        return (
+            "You are an expert text-to-image prompt writer. Follow the attached Skill instructions exactly. "
+            "Return only one complete natural-language positive image-generation prompt that can be pasted directly. "
+            "Integrate subject, action, clothing, environment, composition, camera, lighting, color, material, medium, "
+            "and finishing style into one clear paragraph. Do not output a title, structured breakdown, negative-prompt "
+            "section, exclusion explanation, analysis, notes, MiniMax H3 video sections, shot timeline, sound design, "
+            "dialogue, or camera-motion timing. Silently avoid inventing identities, brands, logos, or text the user did not request. "
+            + direct_rule + language_rule
+        )
+    if task_upper == "FL2I":
+        return (
+            "You are an expert first-last-frame image prompt writer. Follow the attached Skill instructions exactly. "
+            "Treat <Picture 1> as the first frame and <Picture 2> as the last frame unless the user says otherwise. "
+            "Return only one complete natural-language image-sequence prompt that can be pasted directly. "
+            "In that paragraph, lock identity, clothing, props, composition, and environment anchors, then describe the "
+            "necessary continuous changes and intermediate stages from the first frame to the last frame. Do not output "
+            "separate first-frame judgment, continuity analysis, conflict list, intermediate-frame suggestion headings, "
+            "negative-prompt section, analysis, notes, MiniMax H3 video sections, or a third input image. "
+            + direct_rule + language_rule
+        )
     fl2va = task_upper == "FL2VA"
-    full_reference = task_upper in {"REF2VA", "HYBRID"}
+    full_reference = task_upper in {"REF2VA", "HYBRID", "H3_STANDARD"}
     context = context if isinstance(context, dict) else {}
     label_rule = (
         "FL2VA picture labels must be bare lowercase: picture 1 and picture 2, never angle brackets. "
@@ -1162,7 +1217,7 @@ def _system_prompt(
         "Audio items are label-only references; never claim you listened to them. Before returning, silently check "
         "that every required section is present in the correct order, every used label exists, no filename appears, "
         "no audio content was fabricated, all timing fits the target duration, and the audio relationship matches "
-        f"the supplied mode. {language_rule}"
+        f"the supplied mode. {direct_rule} {language_rule}"
     )
 
 
@@ -1190,6 +1245,84 @@ def _strip_filenames(text: str) -> str:
         flags=re.IGNORECASE,
     ).strip()
 
+
+_META_HEADING_RE = re.compile(
+    r"^\s*(?:\d+[.、]\s*)?(?:"
+    r"反推摘要|结构化拆解|结构化视觉拆解|视觉拆解|H3\s*参考用法|参考用途|素材用途|"
+    r"首尾帧判断|连续性|冲突(?:或|与)不确定项|中间帧建议|负面约束|规避项|合规(?:说明|提示)?|"
+    r"说明|注意|备注|使用说明|质量要求|分析|技术说明|镜头时间线|时间线表|"
+    r"保留项|替换建议|禁止复制|negative\s*prompt|notes?|explanation|analysis|timeline|"
+    r"quality\s*check|output\s*format"
+    r")\s*(?:[:：].*)?$",
+    flags=re.IGNORECASE,
+)
+
+_IMAGE_PROMPT_HEADING_RE = re.compile(
+    r"^\s*(?:\d+[.、]\s*)?(?:"
+    r"可复用生成提示词|可复用图片提示词|生图主提示词|主提示词|图片提示词|最终提示词|正向提示词|"
+    r"positive\s*prompt|image\s*prompt|prompt"
+    r")\s*[:：]?\s*$",
+    flags=re.IGNORECASE,
+)
+
+
+def _markdown_plain_text(text: str) -> str:
+    value = _unescape_model_text(text)
+    value = re.sub(r"```(?:json|text)?", "", value, flags=re.IGNORECASE).replace("```", "")
+    value = re.sub(r"(?m)^\s{0,3}#{1,6}\s*", "", value)
+    value = value.replace("**", "").replace("__", "")
+    value = re.sub(r"(?m)^\s*(?:[-*•·]|\d+[.、])\s*", "", value)
+    return re.sub(r"\n{3,}", "\n\n", value).strip()
+
+
+def _sanitize_direct_image_output(text: str) -> str:
+    """Return only the positive image prompt, without analysis or instructional scaffolding."""
+    value = _markdown_plain_text(text)
+    inline = re.search(
+        r"(?im)^\s*(?:\d+[.、]\s*)?(?:可复用生成提示词|可复用图片提示词|生图主提示词|主提示词|"
+        r"图片提示词|最终提示词|正向提示词|positive\s*prompt|image\s*prompt|prompt)\s*[:：]\s*(.+)$",
+        value,
+    )
+    if inline and inline.group(1).strip():
+        prompt = re.sub(r"\s+", " ", inline.group(1)).strip().strip("“”\"'")
+        prompt = re.sub(r"^(?:以下是|下面是|这是)[^。！？\n]{0,24}(?:提示词|描述|内容)?\s*[:：]\s*", "", prompt)
+        prompt = re.sub(r"^(?:这张|这幅|该)?(?:图片|图像|画面)(?:显示|展示|呈现)[，,:：]?\s*", "", prompt)
+        return prompt
+    lines = [line.rstrip() for line in value.splitlines()]
+    selected: list[str] = []
+    collecting = False
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            if collecting and selected and selected[-1] != "":
+                selected.append("")
+            continue
+        if not collecting:
+            if _IMAGE_PROMPT_HEADING_RE.match(stripped):
+                collecting = True
+            continue
+        if _META_HEADING_RE.match(stripped) or _IMAGE_PROMPT_HEADING_RE.match(stripped):
+            break
+        if re.match(r"^(?:主体|动作与表情|服装与道具|环境与空间|构图与镜头|光影与色彩|材质与风格|画面文字|不确定项|首帧|尾帧|连续性|冲突或不确定项|中间帧)\s*[:：<]", stripped):
+            break
+        selected.append(stripped)
+    prompt = " ".join(part for part in selected if part).strip()
+    if not prompt:
+        paragraphs = [part.strip() for part in re.split(r"\n\s*\n", value) if part.strip()]
+        candidates = []
+        for part in paragraphs:
+            first = part.splitlines()[0].strip()
+            if _META_HEADING_RE.match(first) or _IMAGE_PROMPT_HEADING_RE.match(first):
+                continue
+            if re.match(r"^(?:主体|动作与表情|服装与道具|环境与空间|构图与镜头|光影与色彩|材质与风格|画面文字|不确定项|首帧|尾帧|连续性|冲突或不确定项|中间帧)\s*[:：<]", first):
+                continue
+            candidates.append(part.replace("\n", " "))
+        prompt = max(candidates, key=len, default=value.replace("\n", " "))
+    prompt = re.sub(r"^(?:可复用生成提示词|可复用图片提示词|生图主提示词|主提示词|图片提示词|最终提示词|正向提示词|prompt)\s*[:：]\s*", "", prompt, flags=re.IGNORECASE)
+    prompt = re.sub(r"^(?:以下是|下面是|这是)[^。！？\n]{0,24}(?:提示词|描述|内容)?\s*[:：]\s*", "", prompt)
+    prompt = re.sub(r"^(?:这张|这幅|该)?(?:图片|图像|画面)(?:显示|展示|呈现)[，,:：]?\s*", "", prompt)
+    prompt = re.sub(r"\s+", " ", prompt).strip().strip("“”\"'")
+    return prompt
 
 def _format_prompt_sections(text: str) -> str:
     """Force official section headings onto separate lines without rewriting content."""
@@ -1230,11 +1363,13 @@ def _clean_dialogue_tags(text: str) -> str:
 
 
 def _clean_section_content(name: str, content: str) -> str:
-    value = _clean_dialogue_tags(content)
+    value = _markdown_plain_text(_clean_dialogue_tags(content))
     lines = []
     repeats: dict[str, int] = {}
     for line in value.splitlines():
         stripped = line.strip()
+        if _META_HEADING_RE.match(stripped):
+            break
         if not stripped:
             if lines and lines[-1] != "":
                 lines.append("")
@@ -1794,6 +1929,12 @@ def generate_prompt_sync(config: dict | None, payload: dict) -> str:
         result = str(result_box.get("value") or "")
     if not result:
         raise RuntimeError("提示词模型返回了空内容")
+    task_upper = str(payload.get("task") or "").upper()
+    if task_upper in {"IMAGE_REVERSE", "T2I", "FL2I"}:
+        return _sanitize_direct_image_output(_strip_filenames(str(result)))
+    if task_upper == "VIDEO_REVERSE":
+        formatted = _format_prompt_sections(_strip_filenames(result))
+        return _sanitize_h3_output(_normalize_subject_shorthand(formatted))
     formatted = _format_prompt_sections(_strip_filenames(result))
     formatted = _ensure_fl2va_picture_labels(
         formatted,
@@ -1890,13 +2031,18 @@ async def optimize_prompt(request):
         result = await task
         if not result:
             raise RuntimeError("API 返回了空提示词")
-        formatted = _format_prompt_sections(_strip_filenames(result))
-        formatted = _ensure_fl2va_picture_labels(
-            formatted,
-            str(payload.get("task") or "T2VA"),
-            float(payload.get("duration") or 5),
-            str(config.get("output_language") or "English"),
-        )
+        task_name = str(payload.get("task") or "").upper()
+        cleaned = _strip_filenames(result)
+        if task_name in {"IMAGE_REVERSE", "T2I", "FL2I"}:
+            return web.json_response({"prompt": _sanitize_direct_image_output(cleaned)})
+        formatted = _format_prompt_sections(cleaned)
+        if task_name != "VIDEO_REVERSE":
+            formatted = _ensure_fl2va_picture_labels(
+                formatted,
+                str(payload.get("task") or "T2VA"),
+                float(payload.get("duration") or 5),
+                str(config.get("output_language") or "English"),
+            )
         formatted = _ensure_supplied_dialogues(
             formatted,
             str(payload.get("prompt") or ""),

@@ -1,0 +1,4 @@
+interface:
+  display_name: "H3 六段式标准提示词"
+  short_description: "严格生成 MiniMax H3 六段式标准提示词，可独立于参考素材数量使用"
+  default_prompt: "把当前创意扩展成严格符合 MiniMax H3 标准的六段式提示词。"

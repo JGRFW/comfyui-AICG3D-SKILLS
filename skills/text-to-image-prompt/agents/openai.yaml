@@ -1,0 +1,4 @@
+interface:
+  display_name: "文生图（T2I）"
+  short_description: "把文字创意扩展成一段可直接复制粘贴的文生图正向提示词"
+  default_prompt: "把当前文字创意扩展成一段可直接复制粘贴的文生图正向提示词。"

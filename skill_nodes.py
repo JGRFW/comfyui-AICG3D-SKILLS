@@ -19,6 +19,7 @@ MODES = tuple(composer.MODE_TO_TASK)
 ASPECTS = tuple(composer.RATIO_VALUES)
 INTENSITIES = tuple(composer.INTENSITY_TEXT)
 OUTPUT_LANGUAGES = ("中文", "English")
+QUICK_TASKS = ("普通创作", "图片反推提示词", "视频反推提示词")
 LOCAL_DEVICES = ("cuda", "cpu")
 PROVIDERS = tuple(optimizer.PROVIDERS)
 
@@ -651,6 +652,7 @@ class AICG3DSkillPromptExpander:
         "截图中的四个项目是高级连线条目：参考素材JSON 来自“参考素材整理”；"
         "技能重点输入和技能包输入来自“技能选择器”；模型设置JSON 来自“模型设置”。"
         "额外要求用于填写必须遵守的自然语言限制。点击节点上的“使用说明”可查看完整填写顺序。"
+        "“快捷任务”可在图片反推、视频反推和普通创作之间切换；反推模式会自动加载专用 Skill 并隐藏无关参数。"
     )
 
     @classmethod
@@ -698,6 +700,13 @@ class AICG3DSkillPromptExpander:
                 "无模型时生成模板": (
                     "BOOLEAN",
                     {"default": True, "tooltip": "没有配置模型时仍生成结构完整、可继续修改的 H3 六段式草稿。"},
+                ),
+                "反推快捷任务": (
+                    list(QUICK_TASKS),
+                    {
+                        "default": "普通创作",
+                        "tooltip": "图片反推会分析实际图片并生成图片提示词；视频反推会分析实际视频并生成 H3 Ref2VA 六段式提示词。",
+                    },
                 ),
             },
             "optional": {
@@ -755,13 +764,43 @@ class AICG3DSkillPromptExpander:
         }
 
     def run(self, **kwargs):
-        idea = _as_text(kwargs.get("创意描述")) or "人物在同一空间中展开行动"
+        quick_task = _as_text(kwargs.get("反推快捷任务")) or "普通创作"
+        image_reverse = quick_task == "图片反推提示词"
+        video_reverse = quick_task == "视频反推提示词"
+        reverse_task = image_reverse or video_reverse
+        idea = _as_text(kwargs.get("创意描述"))
+        if not idea and image_reverse:
+            idea = "分析实际参考图片，只生成一段可直接复制粘贴的图片生成提示词。"
+        elif not idea and video_reverse:
+            idea = "分析实际参考视频的镜头、动作、连续性、节奏和声音，反推出 MiniMax H3 Ref2VA 六段式提示词。"
+        idea = idea or "人物在同一空间中展开行动"
         mode = _as_text(kwargs.get("任务模式")) or "Ref2VA 全能参考（推荐）"
+        h3_standard_mode = mode == "H3 六段式标准提示词"
+        t2i_mode = mode == "文生图（T2I）"
+        fl2i_mode = mode == "首尾帧生图（FL2I）"
+        image_prompt_mode = t2i_mode or fl2i_mode
         aspect = _as_text(kwargs.get("输出画幅")) or "16:9（横屏）"
         duration = float(kwargs.get("视频时长") or 10.0)
         intensity = _as_text(kwargs.get("动作强度")) or "R2 商业高燃（默认）"
         focus = _as_text(kwargs.get("技能重点输入")) or _as_text(kwargs.get("技能重点")) or "自动选择"
         skill_id = _as_text(kwargs.get("技能包输入")) or _as_text(kwargs.get("技能包")) or skills.default_skill_id()
+        if image_reverse:
+            skill_id = skills.IMAGE_REVERSE_SKILL_ID
+            mode = "Ref2VA 全能参考（推荐）"
+            focus = "自动选择"
+        elif video_reverse:
+            skill_id = skills.VIDEO_REVERSE_SKILL_ID
+            mode = "Ref2VA 全能参考（推荐）"
+            focus = "镜头与分镜"
+        elif h3_standard_mode:
+            skill_id = skills.H3_STANDARD_SKILL_ID
+            focus = "全流程导演"
+        elif t2i_mode:
+            skill_id = skills.T2I_SKILL_ID
+            focus = "自动选择"
+        elif fl2i_mode:
+            skill_id = skills.FL2I_SKILL_ID
+            focus = "镜头与分镜"
         extra = _as_text(kwargs.get("额外要求"))
         dialogue_timeline = _as_text(kwargs.get("台词时间线"))
         if dialogue_timeline:
@@ -771,10 +810,21 @@ class AICG3DSkillPromptExpander:
                 + dialogue_timeline
             )
             extra = f"{extra}\n\n{dialogue_rule}".strip()
+        if reverse_task:
+            reverse_rule = (
+                "这是反推任务：只依据实际连接图片或视频中的可见/可听证据；"
+                "无法确认的内容不要猜测，也不要在最终结果中输出不确定性说明、分析或操作建议。"
+            )
+            extra = f"{extra}\n\n{reverse_rule}".strip()
         output_language = _as_text(kwargs.get("输出语言")) or "中文"
         fallback_enabled = bool(kwargs.get("无模型时生成模板", True))
         config = _decode_json(kwargs.get("模型设置JSON")) or optimizer.load_config()
         config["output_language"] = output_language
+        if reverse_task:
+            fallback_enabled = False
+            config["read_media"] = True
+        elif fl2i_mode:
+            config["read_media"] = True
 
         bundle_references = _references_from_media_bundle(kwargs.get("AICG3D资源库"))
         if bundle_references:
@@ -785,11 +835,46 @@ class AICG3DSkillPromptExpander:
                 references = composer.infer_idea_references(idea)
             references = _attach_images(references, kwargs.get("参考图片"))
 
+        if image_reverse and not any(
+            str(item.get("kind") or "image").lower() == "image" and item.get("images")
+            for item in references
+        ):
+            raise RuntimeError("图片反推需要至少一张实际图片：请连接“参考图片”或从 AICG3D 资源库接入图片。")
+        if video_reverse and not any(
+            str(item.get("kind") or "").lower() == "video" and item.get("images")
+            for item in references
+        ):
+            raise RuntimeError("视频反推需要至少一个实际视频：请从 AICG3D 资源库接入视频。")
+        if fl2i_mode and sum(
+            1 for item in references
+            if str(item.get("kind") or "image").lower() == "image" and item.get("images")
+        ) < 2:
+            raise RuntimeError("首尾帧生图需要两张实际图片：<Picture 1> 作为首帧，<Picture 2> 作为尾帧。")
+        if reverse_task and not _config_ready(config):
+            raise RuntimeError("图片/视频反推需要视觉模型：请先点击“模型设置”，配置支持视觉的线上模型或本地视觉模型。")
         context, used_references, selected_skill_id = skills.build_context(
             idea,
             focus,
             skill_id,
             max_chars=18000 if config.get("mode") == "local" else 56000,
+        )
+        optimizer_task = (
+            "IMAGE_REVERSE" if image_reverse
+            else "VIDEO_REVERSE" if video_reverse
+            else composer.MODE_TO_TASK.get(mode, "Ref2VA")
+        )
+        output_goal = (
+            "请严格依据实际图片证据，只输出一段可直接复制粘贴的图片生成提示词。不要摘要、结构化拆解、H3 参考用法、规避说明、分析或任何额外解释。"
+            if image_reverse
+            else "请严格依据实际视频证据，只输出 MiniMax H3 Ref2VA 六段式正文。不要镜头时间线、说明、分析或额外解释。"
+            if video_reverse
+            else "请只输出 MiniMax H3 六段式标准提示词正文，不要合并、省略或添加任何说明。"
+            if h3_standard_mode
+            else "请只输出一段可直接复制粘贴的文生图提示词。不要结构拆解、负面约束说明、视频六段式或额外解释。"
+            if t2i_mode
+            else "请以 <Picture 1> 为首帧、<Picture 2> 为尾帧，只输出可直接复制粘贴的首尾帧生图提示词或图片序列描述。不要分析、说明、标题或额外解释。"
+            if fl2i_mode
+            else None
         )
         node_prompt = composer.build_node_prompt(
             idea,
@@ -801,10 +886,12 @@ class AICG3DSkillPromptExpander:
             context,
             references,
             extra,
+            output_goal,
         )
         request_payload = {
-            "task": composer.MODE_TO_TASK.get(mode, "Ref2VA"),
+            "task": optimizer_task,
             "skill_id": selected_skill_id,
+            "quick_task": quick_task,
             "aspect_ratio": composer.RATIO_VALUES.get(aspect, "16:9"),
             "duration_seconds": duration,
             "prompt": node_prompt,
@@ -828,16 +915,21 @@ class AICG3DSkillPromptExpander:
                 },
             )
             status = f"已使用{'本地模型' if config.get('mode') == 'local' else config.get('provider') or '线上 API'}生成；加载 {len(used_references)} 份 Skill 规则。"
-            quality = validator.validate_h3(prompt)
-            severe = any(str(item).startswith(("H1", "H8")) for item in quality.get("issues") or [])
-            if severe or len(str(prompt)) > 30000:
-                prompt = composer.build_fallback(idea, mode, aspect, duration, intensity, references)
-                status += " 模型结果结构异常，已自动修复为可用的 H3 六段式草稿。"
+            if not reverse_task and not image_prompt_mode:
+                quality = validator.validate_h3(prompt)
+                severe = any(str(item).startswith(("H1", "H8")) for item in quality.get("issues") or [])
+                if severe or len(str(prompt)) > 30000:
+                    prompt = composer.build_fallback(idea, mode, aspect, duration, intensity, references)
+                    status += " 模型结果结构异常，已自动修复为可用的 H3 六段式草稿。"
         except Exception as error:
             if not fallback_enabled:
                 raise RuntimeError(f"H3 提示词生成失败：{error}") from error
-            prompt = composer.build_fallback(idea, mode, aspect, duration, intensity, references)
-            status = f"模型未调用：{error}。已输出结构完整的离线 H3 草稿。"
+            if image_prompt_mode:
+                prompt = composer.build_image_prompt(idea, mode, aspect, references, extra)
+                status = f"模型未调用：{error}。已输出结构完整的离线图片提示词草稿。"
+            else:
+                prompt = composer.build_fallback(idea, mode, aspect, duration, intensity, references)
+                status = f"模型未调用：{error}。已输出结构完整的离线 H3 草稿。"
 
         request_payload["references"] = references
         request_payload["skill_references"] = used_references

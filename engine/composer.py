@@ -14,6 +14,9 @@ MODE_TO_TASK = {
     "I2VA 首帧参考": "I2VA",
     "FL2VA 首尾帧参考": "FL2VA",
     "L2VA 尾帧参考": "L2VA",
+    "H3 六段式标准提示词": "H3_STANDARD",
+    "文生图（T2I）": "T2I",
+    "首尾帧生图（FL2I）": "FL2I",
 }
 
 RATIO_VALUES = {
@@ -96,6 +99,7 @@ def build_node_prompt(
     skill_context: str,
     references: list[dict[str, Any]],
     extra_requirements: str = "",
+    output_goal: str | None = None,
 ) -> str:
     reference_lines = []
     for index, item in enumerate(references, start=1):
@@ -127,13 +131,47 @@ def build_node_prompt(
             "===== 已加载的 Skill 规则 =====",
             str(skill_context or "").strip(),
             "",
-            "请严格执行以上规则，把用户创意扩展为最终 MiniMax H3 提示词。",
+            output_goal or "请严格执行以上规则，把用户创意扩展为最终 MiniMax H3 提示词。",
         ]
     )
 
 
 def _subject_name(index: int, scene: bool = False) -> str:
     return f"场景主体{index}" if scene else f"画面主体{index}"
+
+
+def build_image_prompt(
+    idea: str,
+    mode: str,
+    aspect_label: str,
+    references: list[dict[str, Any]],
+    extra_requirements: str = "",
+) -> str:
+    """Build one copy-ready image prompt without analysis scaffolding."""
+    task = MODE_TO_TASK.get(mode, "T2I")
+    aspect = RATIO_VALUES.get(aspect_label, "16:9")
+    clean_idea = str(idea or "一个主体清晰的视觉画面").strip().rstrip("。.!！?？")
+    extra = str(extra_requirements or "").strip().rstrip("。.!！?？")
+    if task == "FL2I":
+        labels = [str(item.get("label") or "") for item in references if item.get("kind") == "image"]
+        first = labels[0] if labels else "<Picture 1>"
+        last = labels[1] if len(labels) > 1 else "<Picture 2>"
+        prompt = (
+            f"以 {aspect} 画幅生成一组从 {first} 到 {last} 的连续画面，{clean_idea}。"
+            f"以 {first} 作为起始状态并锁定主体身份、服装、道具、构图和光线，"
+            f"按动作与空间变化自然过渡到 {last} 的结束状态；中间画面保持同一主体和背景锚点，"
+            "让身体姿态、位置、环境状态、材质与光线连续演变，形成可直接用于首尾帧生图的画面序列。"
+        )
+    else:
+        prompt = (
+            f"以 {aspect} 画幅创作一幅完整图片，{clean_idea}。"
+            "准确呈现主体数量、外观、服装、动作和表情，交代环境、时间、空间层次与主体位置，"
+            "使用清晰的景别、视角和构图，统一主光方向、色温、明暗层次、阴影、反射与色彩关系，"
+            "明确材质、媒介、画风和后期质感，形成主体清晰、空间完整、光线连贯的高质量画面。"
+        )
+    if extra:
+        prompt += f" {extra}。"
+    return re.sub(r"\s+", " ", prompt).strip()
 
 
 def build_fallback(
@@ -149,7 +187,7 @@ def build_fallback(
     duration = max(4.0, min(15.0, float(duration or 10.0)))
     clean_idea = str(idea or "人物在同一空间中展开行动").strip()
     refs = references or infer_idea_references(clean_idea)
-    if task == "Ref2VA":
+    if task in {"Ref2VA", "H3_STANDARD"}:
         definitions: list[str] = []
         used_labels: list[str] = []
         subject_tokens: list[str] = []
@@ -220,7 +258,7 @@ def build_fallback(
     sections.extend(
         [
             "",
-            "detailed_description:" if task == "Ref2VA" else "",
+            "detailed_description:" if task in {"Ref2VA", "H3_STANDARD"} else "",
             f"[Shot 1] {opening_subject} 在中近景斜角中进入可执行的起始姿态，重心下沉并主动向冲突点移动。"
             "镜头以稳定推进和轻微横移保持空间方向，动作从准备直接进入第一次接触，接触点清晰可见，"
             f"{second_subject} 的受击方向和周围环境受力形成明确反馈。",
@@ -243,7 +281,5 @@ def build_fallback(
             "低频脉冲从首镜轻起，第二镜对招时增加节奏层次，收束动作命中的一拍短暂收紧，末帧留下余响并收掉。",
         ]
     )
-    lines = [line for line in sections if line != ""]
-    # Keep blank lines between official sections without accumulating empty items.
     text = "\n".join(sections)
     return re.sub(r"\n{3,}", "\n\n", text).strip()

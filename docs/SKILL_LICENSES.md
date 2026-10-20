@@ -1,22 +1,23 @@
 # Skill 来源与许可证台账
 
-本台账用于公开发布前核对 `skills/` 目录中的每个 Skill。最后核验日期：2026-10-10。本文件是项目记录，不构成法律意见；权利状态以权利人和原始许可证文本为准。
+本台账用于公开发布前核对 `skills/` 目录中的每个 Skill。最后核验日期：2026-10-20。本文件是项目记录，不构成法律意见；权利状态以权利人和原始许可证文本为准。
 
 ## 汇总
 
-当前 `skills/` 下共有 286 个 Skill 根目录：
+当前 `skills/` 中包含以下来源类别：
 
 | 类别 | 数量 | 来源 | 许可证状态 | 发布结论 |
 |---|---:|---|---|---|
 | T8 Creative DNA Skill | 284 | `T8mars/minimax-h3-prompt-skill-T8` 固定版本 | 代码 MIT；原创摘要、Creative DNA 和模板 CC BY 4.0 | 许可证和固定来源已记录 |
 | 默认短剧导演 Skill | 1 | Short-Drama Director Suite contributors | MIT | 已附完整许可证 |
 | 角色参考图 Skill | 1 | `character-refs`，作者 X：`@eternityspring` | `SKILL.md` 声明 Apache-2.0；已补完整许可证正文 | 已记录 |
+| 项目内置工具 Skill | 5 | AICG3D | 随本项目按 GPL-3.0-or-later 分发 | 项目原创 |
 
 2026-10-10 已移除两个作者和许可证未确认的本地 Skill；当前没有待确认的 Skill 根目录。
 
 ## T8 Creative DNA Skill
 
-- 目录：`skills/` 中除 `character-refs` 和 `minimax-h3-short-drama-director` 外的全部 284 个 Skill。
+- 目录：固定导入的 284 个 T8 Creative DNA Skill；项目内置导演和反推 Skill 不计入 T8 来源。
 - 仓库：<https://github.com/T8mars/minimax-h3-prompt-skill-T8>
 - 版本：`v1.4.8`
 - 固定提交：`5882fc3d72d7cd4e4b3f0ab39f6b48966cb9076d`
@@ -34,6 +35,16 @@
 - 许可证：MIT
 - 许可证文件：[LICENSE](../skills/minimax-h3-short-drama-director/LICENSE)
 - 说明：插件对该 Skill 进行了 MiniMax H3 适配和界面整合；MIT 允许修改和再分发，但必须保留版权与许可声明。
+
+## 项目内置反推 Skill
+
+- `skills/image-prompt-reverse/`：分析实际参考图片并反推可复用的图片生成提示词。
+- `skills/video-prompt-reverse/`：分析实际参考视频并反推 MiniMax H3 Ref2VA 六段式提示词。
+- `skills/h3-six-segment-standard/`：强制生成 MiniMax H3 六段式标准提示词。
+- `skills/text-to-image-prompt/`：生成文生图图片提示词、视觉拆解和负面约束。
+- `skills/first-last-frame-image-prompt/`：根据首帧和尾帧参考图生成连续图片或中间帧提示词。
+- 来源：本项目原创；随插件按 GPL-3.0-or-later 分发。
+- 反推 Skill 只提供提示词分析与结构化方法，不授予输入图片、视频、真人、品牌、角色、音乐或生成结果的使用权。
 
 ## 角色参考图 Skill
 

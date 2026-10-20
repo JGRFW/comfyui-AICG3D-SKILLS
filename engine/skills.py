@@ -16,6 +16,20 @@ from typing import Any
 PLUGIN_DIR = Path(__file__).resolve().parents[1]
 SKILLS_DIR = PLUGIN_DIR / "skills"
 DEFAULT_SKILL_ID = "minimax-h3-short-drama-director"
+IMAGE_REVERSE_SKILL_ID = "image-prompt-reverse"
+VIDEO_REVERSE_SKILL_ID = "video-prompt-reverse"
+H3_STANDARD_SKILL_ID = "h3-six-segment-standard"
+T2I_SKILL_ID = "text-to-image-prompt"
+FL2I_SKILL_ID = "first-last-frame-image-prompt"
+BUILTIN_SKILL_CATEGORIES = {
+    DEFAULT_SKILL_ID: "核心导演",
+    IMAGE_REVERSE_SKILL_ID: "反推工具",
+    VIDEO_REVERSE_SKILL_ID: "反推工具",
+    H3_STANDARD_SKILL_ID: "标准格式",
+    T2I_SKILL_ID: "图片生成",
+    FL2I_SKILL_ID: "图片生成",
+}
+BUILTIN_SKILL_IDS = frozenset(BUILTIN_SKILL_CATEGORIES)
 PREVIEW_MANIFEST_PATH = PLUGIN_DIR / "preview_manifest.json"
 _PREVIEW_CACHE: dict[str, dict[str, Any]] | None = None
 T8_SOURCE_NAME = "T8 Creative DNA Prompt Library"
@@ -182,10 +196,19 @@ def _entry(directory: Path) -> dict[str, Any] | None:
     original_name = metadata.get("name") or directory.name
     full_description = metadata.get("description") or ""
     references = directory / "references"
-    is_t8_skill = bool(interface) and (references / "summary.md").is_file() and (references / "template.md").is_file()
+    is_builtin = directory.name in BUILTIN_SKILL_IDS
+    is_t8_skill = (
+        not is_builtin
+        and bool(interface)
+        and (references / "summary.md").is_file()
+        and (references / "template.md").is_file()
+    )
     display_name = interface.get("display_name") or ("MiniMax H3 短剧提示词导演" if directory.name == DEFAULT_SKILL_ID else original_name)
-    source = T8_SOURCE_NAME if is_t8_skill else ("AICG3D" if directory.name == DEFAULT_SKILL_ID else "本地 Skill")
-    category = "核心导演" if directory.name == DEFAULT_SKILL_ID else ("创意 DNA" if is_t8_skill else "专业 Skill")
+    source = T8_SOURCE_NAME if is_t8_skill else ("AICG3D" if is_builtin else "本地 Skill")
+    category = BUILTIN_SKILL_CATEGORIES.get(
+        directory.name,
+        "创意 DNA" if is_t8_skill else "专业 Skill",
+    )
     return {
         "id": directory.name,
         "name": display_name,
@@ -194,12 +217,12 @@ def _entry(directory: Path) -> dict[str, Any] | None:
         "full_description": full_description,
         "default_prompt": interface.get("default_prompt") or "",
         "source": source,
-        "source_url": T8_SOURCE_URL if interface else "",
+        "source_url": T8_SOURCE_URL if is_t8_skill else "",
         "category": category,
         "directory": directory,
         "entry": entry,
         "reference_count": len([path for path in references.glob("**/*") if path.is_file()]) if references.is_dir() else 0,
-        "bundled": directory.name == DEFAULT_SKILL_ID,
+        "bundled": is_builtin,
     }
 
 

@@ -1,0 +1,4 @@
+interface:
+  display_name: "首尾帧生图（FL2I）"
+  short_description: "根据首帧和尾帧参考图，只输出一段可直接复制粘贴的连续生图提示词"
+  default_prompt: "把 <Picture 1> 作为首帧、<Picture 2> 作为尾帧，只输出一段可直接复制粘贴的连续生图提示词。"

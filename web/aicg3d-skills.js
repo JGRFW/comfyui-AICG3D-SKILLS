@@ -13,6 +13,38 @@ if (!document.querySelector(`link[data-aicg3d-skills-style="1"]`)) {
 const SETTINGS_NODE = "AICG3D_SKILLS_Settings";
 const EXPANDER_NODE = "AICG3D_SKILLS_PromptExpander";
 const SKILL_MANAGER_NODE = "AICG3D_SKILLS_SkillManager";
+const QUICK_TASK_WIDGET = "反推快捷任务";
+const QUICK_TASK_UI_WIDGET = "快捷任务";
+const QUICK_TASKS = ["普通创作", "图片反推提示词", "视频反推提示词"];
+const QUICK_TASK_SKILL_IDS = {
+    "图片反推提示词": "image-prompt-reverse",
+    "视频反推提示词": "video-prompt-reverse",
+};
+const QUICK_TASK_PROMPTS = {
+    "图片反推提示词": "分析 <Picture 1>，只生成一段可直接复制粘贴的图片生成提示词。",
+    "视频反推提示词": "分析 <Video 1> 的镜头、动作、连续性和声音，只输出 MiniMax H3 Ref2VA 六段式正文。",
+};
+const QUICK_TASK_HIDDEN_FIELDS = [
+    "任务模式",
+    "输出画幅",
+    "视频时长",
+    "动作强度",
+    "技能重点",
+    "技能包",
+    "无模型时生成模板",
+];
+const H3_STANDARD_MODE = "H3 六段式标准提示词";
+const T2I_MODE = "文生图（T2I）";
+const FL2I_MODE = "首尾帧生图（FL2I）";
+const TASK_MODE_SKILL_IDS = {
+    [H3_STANDARD_MODE]: "h3-six-segment-standard",
+    [T2I_MODE]: "text-to-image-prompt",
+    [FL2I_MODE]: "first-last-frame-image-prompt",
+};
+const TASK_MODE_PROMPTS = {
+    [T2I_MODE]: "生成一幅主体明确、构图完整、光线清晰的图片。",
+    [FL2I_MODE]: "以 <Picture 1> 为首帧、<Picture 2> 为尾帧，生成连续的首尾帧生图提示词。",
+};
 const API_BASE = "/aicg3d-skills/api";
 const PROVIDERS = {
     runninghub: ["RunningHub", "https://www.runninghub.cn/openapi/v2", "openai/gpt-5.6-sol", "runninghub"],
@@ -28,6 +60,7 @@ const skillPreviewCache = new Map();
 let skillHoverPreview = null;
 let skillHoverTimer = null;
 let configCache = null;
+let skillItemsCache = [];
 
 function nodeClass(node) {
     return String(node?.comfyClass || node?.type || "");
@@ -522,9 +555,233 @@ function configureSettingsNodeWidgets(node) {
     requestAnimationFrame(() => syncSettingsNodeWidgetVisibility(node));
 }
 
+function quickTaskValue(node) {
+    return String(widgetByName(node, QUICK_TASK_WIDGET)?.value || "普通创作");
+}
+
+function skillItemForId(skillId) {
+    return skillItemsCache.find((item) => String(item?.id || "") === String(skillId || "")) || null;
+}
+
+function setQuickTaskSkill(node, task) {
+    const item = skillItemForId(QUICK_TASK_SKILL_IDS[task]);
+    if (item) setWidget(node, ["技能包"], skillLabel(item));
+}
+
+function setTaskModeSkill(node, mode) {
+    const item = skillItemForId(TASK_MODE_SKILL_IDS[mode]);
+    if (item) setWidget(node, ["技能包"], skillLabel(item));
+}
+
+function applyTaskModeBehavior(node, value = "") {
+    if (!node || quickTaskValue(node) !== "普通创作") return;
+    const mode = String(value || widgetByName(node, "任务模式")?.value || "Ref2VA 全能参考（推荐）");
+    const specialSkillId = TASK_MODE_SKILL_IDS[mode];
+    const special = Boolean(specialSkillId);
+    const imageMode = mode === T2I_MODE || mode === FL2I_MODE;
+    const promptWidget = widgetByName(node, "创意描述");
+    const currentPrompt = String(promptWidget?.value || "");
+    const previousDefault = String(node.__aicg3dTaskModePrompt || "");
+    const nextDefault = String(TASK_MODE_PROMPTS[mode] || "");
+    const previous = node.__aicg3dTaskModePrevious;
+    const replaceablePrompt = !currentPrompt.trim()
+        || currentPrompt === previousDefault
+        || currentPrompt === "图1和图2在图3场景打斗"
+        || currentPrompt === "人物在同一空间中展开行动"
+        || Object.values(QUICK_TASK_PROMPTS).includes(currentPrompt);
+
+    if (promptWidget && special && nextDefault && replaceablePrompt) {
+        promptWidget.value = nextDefault;
+        if (promptWidget._state) promptWidget._state.value = nextDefault;
+    } else if (promptWidget && !special && previousDefault && currentPrompt === previousDefault) {
+        promptWidget.value = String(previous?.prompt || "");
+        if (promptWidget._state) promptWidget._state.value = promptWidget.value;
+    }
+    node.__aicg3dTaskModePrompt = nextDefault;
+
+    for (const field of ["视频时长", "动作强度", "技能重点", "技能包"]) {
+        const widget = widgetByName(node, field);
+        const hide = special && (imageMode || field === "技能重点" || field === "技能包");
+        if (hide) hideNodeWidget(widget);
+        else showNodeWidget(widget);
+    }
+
+    if (special) {
+        const currentSkill = String(widgetByName(node, "技能包")?.value || "");
+        const currentItem = skillItemsCache.find((item) => skillLabel(item) === currentSkill);
+        const isTaskModeSkill = Object.values(TASK_MODE_SKILL_IDS).includes(String(currentItem?.id || ""));
+        if (!previous && !isTaskModeSkill) {
+            node.__aicg3dTaskModePrevious = {
+                skill: currentSkill,
+                focus: String(widgetByName(node, "技能重点")?.value || "自动选择"),
+                prompt: currentPrompt,
+            };
+        }
+        setTaskModeSkill(node, mode);
+        setWidget(node, ["技能重点"], imageMode ? "自动选择" : "全流程导演");
+    } else if (previous) {
+        if (previous.skill) setWidget(node, ["技能包"], previous.skill);
+        if (previous.focus) setWidget(node, ["技能重点"], previous.focus);
+        node.__aicg3dTaskModePrevious = null;
+    }
+
+    node._widgetSlotsDirty = true;
+    node.setDirtyCanvas?.(true, true);
+    node.graph?.setDirtyCanvas?.(true, true);
+}
+
+function configureTaskModeBehavior(node) {
+    const modeWidget = widgetByName(node, "任务模式");
+    if (!modeWidget || modeWidget.__aicg3dTaskModeBound) return;
+    modeWidget.__aicg3dTaskModeBound = true;
+    const originalCallback = modeWidget.callback;
+    modeWidget.callback = function (value) {
+        const result = typeof originalCallback === "function" ? originalCallback.apply(this, arguments) : undefined;
+        applyTaskModeBehavior(node, String(value || ""));
+        return result;
+    };
+    requestAnimationFrame(() => applyTaskModeBehavior(node, String(modeWidget.value || "")));
+}
+
+function applyQuickTaskMode(node, value = quickTaskValue(node)) {
+    if (!node) return;
+    const task = QUICK_TASKS.includes(value) ? value : "普通创作";
+    const reverse = task !== "普通创作";
+    const promptWidget = widgetByName(node, "创意描述");
+    const previousDefault = String(node.__aicg3dQuickTaskPrompt || "");
+    const currentPrompt = String(promptWidget?.value || "");
+    const nextDefault = String(QUICK_TASK_PROMPTS[task] || "");
+    const replaceablePrompt = !currentPrompt.trim()
+        || currentPrompt === previousDefault
+        || currentPrompt === "图1和图2在图3场景打斗"
+        || currentPrompt === "人物在同一空间中展开行动";
+    const previousState = node.__aicg3dQuickTaskPrevious;
+    if (promptWidget && reverse && replaceablePrompt) {
+        promptWidget.value = nextDefault;
+        if (promptWidget._state) promptWidget._state.value = nextDefault;
+    } else if (promptWidget && !reverse && previousDefault && currentPrompt === previousDefault) {
+        promptWidget.value = String(previousState?.prompt || "");
+        if (promptWidget._state) promptWidget._state.value = promptWidget.value;
+    }
+    node.__aicg3dQuickTaskPrompt = nextDefault;
+
+    for (const field of QUICK_TASK_HIDDEN_FIELDS) {
+        const widget = widgetByName(node, field);
+        if (reverse) hideNodeWidget(widget);
+        else showNodeWidget(widget);
+    }
+
+    if (reverse) {
+        const previous = node.__aicg3dQuickTaskPrevious;
+        const currentSkill = String(widgetByName(node, "技能包")?.value || "");
+        const currentItem = skillItemsCache.find((item) => skillLabel(item) === currentSkill);
+        const isReverseSkill = Object.values(QUICK_TASK_SKILL_IDS).includes(String(currentItem?.id || ""));
+        if (!previous && !isReverseSkill) {
+            node.__aicg3dQuickTaskPrevious = {
+                skill: currentSkill,
+                focus: String(widgetByName(node, "技能重点")?.value || "自动选择"),
+                prompt: currentPrompt,
+                taskMode: String(widgetByName(node, "任务模式")?.value || "Ref2VA 全能参考（推荐）"),
+            };
+        }
+        setWidget(node, ["任务模式"], "Ref2VA 全能参考（推荐）");
+        setWidget(node, ["技能重点"], task === "视频反推提示词" ? "镜头与分镜" : "自动选择");
+        setQuickTaskSkill(node, task);
+    } else if (node.__aicg3dQuickTaskPrevious) {
+        const previous = node.__aicg3dQuickTaskPrevious;
+        if (previous.skill) setWidget(node, ["技能包"], previous.skill);
+        if (previous.focus) setWidget(node, ["技能重点"], previous.focus);
+        if (previous.taskMode) {
+            const taskModeWidget = widgetByName(node, "任务模式");
+            if (taskModeWidget) {
+                taskModeWidget.value = previous.taskMode;
+                if (taskModeWidget._state) taskModeWidget._state.value = previous.taskMode;
+            }
+        }
+        node.__aicg3dQuickTaskPrevious = null;
+    }
+
+    const ui = widgetByName(node, QUICK_TASK_UI_WIDGET);
+    if (ui && ui.value !== task) ui.value = task;
+    if (!reverse) applyTaskModeBehavior(node, String(widgetByName(node, "任务模式")?.value || ""));
+    node._widgetSlotsDirty = true;
+    node.setDirtyCanvas?.(true, true);
+    node.graph?.setDirtyCanvas?.(true, true);
+}
+
+function configureQuickTaskMode(node) {
+    if (!node || node.__aicg3dQuickTaskConfigured) return;
+    const hidden = widgetByName(node, QUICK_TASK_WIDGET);
+    if (!hidden) {
+        const attempt = Number(node.__aicg3dQuickTaskAttempt || 0);
+        if (attempt < 30) {
+            node.__aicg3dQuickTaskAttempt = attempt + 1;
+            setTimeout(() => configureQuickTaskMode(node), 80);
+        }
+        return;
+    }
+    node.__aicg3dQuickTaskConfigured = true;
+    hideNodeWidget(hidden);
+
+    let ui = widgetByName(node, QUICK_TASK_UI_WIDGET);
+    if (!ui) {
+        ui = node.addWidget("combo", QUICK_TASK_UI_WIDGET, quickTaskValue(node), (value) => {
+            setWidget(node, [QUICK_TASK_WIDGET], value);
+        }, {
+            values: QUICK_TASKS,
+            tooltip: "普通创作保留完整参数；图片/视频反推会自动加载专用 Skill，并隐藏无关参数。",
+        });
+    }
+    if (!ui) {
+        showNodeWidget(hidden);
+        node.__aicg3dQuickTaskConfigured = false;
+        return;
+    }
+    if (ui) {
+        ui.serialize = false;
+        setWidgetOption(ui, "serialize", false);
+        if (ui._state) ui._state.serialize = false;
+    }
+
+    const promptWidget = widgetByName(node, "创意描述");
+    if (ui && promptWidget && Array.isArray(node.widgets)) {
+        const uiIndex = node.widgets.indexOf(ui);
+        const promptIndex = node.widgets.indexOf(promptWidget);
+        if (uiIndex >= 0 && promptIndex >= 0 && uiIndex !== promptIndex + 1) {
+            node.widgets.splice(uiIndex, 1);
+            const nextPromptIndex = node.widgets.indexOf(promptWidget);
+            node.widgets.splice(nextPromptIndex + 1, 0, ui);
+        }
+    }
+
+    if (!hidden.__aicg3dQuickTaskCallbackBound) {
+        hidden.__aicg3dQuickTaskCallbackBound = true;
+        const originalCallback = hidden.callback;
+        hidden.callback = function (value) {
+            const result = typeof originalCallback === "function" ? originalCallback.apply(this, arguments) : undefined;
+            applyQuickTaskMode(node, String(value || "普通创作"));
+            return result;
+        };
+    }
+
+    const sync = () => applyQuickTaskMode(node, quickTaskValue(node));
+    if (!node.__aicg3dQuickTaskConfigureHooked) {
+        node.__aicg3dQuickTaskConfigureHooked = true;
+        const originalConfigure = node.onConfigure;
+        node.onConfigure = function (...args) {
+            const result = originalConfigure?.apply(this, args);
+            requestAnimationFrame(sync);
+            return result;
+        };
+    }
+    requestAnimationFrame(sync);
+    setTimeout(sync, 100);
+    loadSkills().then(sync).catch(() => {});
+}
+
 function configureCompactExpanderWidgets(node) {
     if (!node) return;
-    for (const name of ["参考素材JSON", "技能重点输入", "技能包输入", "模型设置JSON"]) {
+    for (const name of ["参考素材JSON", "技能重点输入", "技能包输入", "模型设置JSON", QUICK_TASK_WIDGET]) {
         hideNodeWidget(widgetByName(node, name));
     }
     node.setDirtyCanvas?.(true, true);
@@ -705,6 +962,7 @@ function syncSkillChoices(skills) {
 async function loadSkills() {
     const payload = await fetchJson(`${API_BASE}/skills`, { cache: "no-store" });
     const skills = Array.isArray(payload.skills) ? payload.skills : [];
+    skillItemsCache = skills;
     registerSkillPreviewItems(skills);
     syncSkillChoices(skills);
     return skills;
@@ -1060,7 +1318,7 @@ function openSkillHelp(node) {
     body.className = "aicg3d-skills-body aicg3d-skills-help";
     const lead = document.createElement("p");
     lead.className = "aicg3d-skills-help-lead";
-    lead.textContent = "普通使用只需要三步：填写“创意描述”，点击“选择 / 管理技能”按中文用途选一个 Skill，然后运行。带“输入”或“JSON”的条目都是高级连线项，不接上游时可以保持空着。";
+    lead.textContent = "普通创作只需填写“创意描述”并选择 Skill；如果要分析现成图片或视频，直接在“快捷任务”里选“图片反推提示词”或“视频反推提示词”，插件会自动加载专用 Skill 并隐藏无关参数。";
     body.append(
         lead,
         helpSection("截图里的五个字段", [
@@ -1070,7 +1328,18 @@ function openSkillHelp(node) {
             helpRow("额外要求", "可以直接输入自然语言限制，例如“不要添加新人物”“结尾停在对手拔枪的瞬间”“保持角色沉默”。可留空。"),
             helpRow("模型设置JSON", "高级连线项，来自“模型设置”。通常不接，插件会使用已经保存的全局 API 或本地模型设置。"),
         ]),
+        helpSection("任务模式新增项", [
+            helpRow("H3 六段式标准提示词", "无论参考素材数量多少，都强制输出 MiniMax H3 的六个标准字段，适合需要严格结构校验的任务。"),
+            helpRow("文生图（T2I）", "只输出一段可直接复制的图片提示词，不再附加结构拆解、负面约束标题、分析或视频字段。"),
+            helpRow("首尾帧生图（FL2I）", "默认把 <Picture 1> 当首帧、<Picture 2> 当尾帧；必须接入两张实际图片，只输出一段连续生图提示词。"),
+        ]),
         helpSection("如何选 Skill", [
+        helpSection("快捷任务（推荐）", [
+            helpRow("图片反推提示词", "把图片接到“参考图片”或 AICG3D 资源库。选择后只输出一段可直接复制粘贴的图片生成提示词，不附带摘要、拆解或参考用法。"),
+            helpRow("视频反推提示词", "把视频接到 AICG3D 资源库。选择后只输出 MiniMax H3 Ref2VA 六个正式字段，不附加镜头时间线、分析、合规说明或操作建议。"),
+            helpRow("普通创作", "恢复任务模式、画幅、时长、动作强度、技能重点和技能包等完整参数；之前手动选择的技能会自动恢复。"),
+            helpRow("模型要求", "图片和视频反推必须配置支持视觉的线上模型或本地视觉模型；不能用“无模型时生成模板”代替真实分析。"),
+        ]),
             helpRow("默认导演", "保留“minimax-h3-short-drama-director”适合大多数短剧、打斗、对白和多段连续性任务。"),
             helpRow("创意 DNA", "技能库新增了 284 个 T8 机制 Skill，包括产品广告、连续追逐、品牌宣传、微表情、材质变身、角色登场等。搜索中文用途后点“使用”即可套到当前节点。"),
         ]),
@@ -1169,6 +1438,8 @@ app.registerExtension({
         }
         if (name === EXPANDER_NODE) {
             configureCompactExpanderWidgets(node);
+            configureQuickTaskMode(node);
+            configureTaskModeBehavior(node);
         }
         if (name === EXPANDER_NODE || name === "AICG3D_SKILLS_SkillSelector" || name === SKILL_MANAGER_NODE) {
             addSkillManagerButton(node);
