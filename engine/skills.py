@@ -18,6 +18,7 @@ SKILLS_DIR = PLUGIN_DIR / "skills"
 DEFAULT_SKILL_ID = "minimax-h3-short-drama-director"
 IMAGE_REVERSE_SKILL_ID = "image-prompt-reverse"
 VIDEO_REVERSE_SKILL_ID = "video-prompt-reverse"
+AUDIO_REVERSE_SKILL_ID = "audio-prompt-reverse"
 H3_STANDARD_SKILL_ID = "h3-six-segment-standard"
 T2I_SKILL_ID = "text-to-image-prompt"
 FL2I_SKILL_ID = "first-last-frame-image-prompt"
@@ -25,6 +26,7 @@ BUILTIN_SKILL_CATEGORIES = {
     DEFAULT_SKILL_ID: "核心导演",
     IMAGE_REVERSE_SKILL_ID: "反推工具",
     VIDEO_REVERSE_SKILL_ID: "反推工具",
+    AUDIO_REVERSE_SKILL_ID: "数字人",
     H3_STANDARD_SKILL_ID: "标准格式",
     T2I_SKILL_ID: "图片生成",
     FL2I_SKILL_ID: "图片生成",

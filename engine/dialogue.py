@@ -82,8 +82,25 @@ def local_model_dirs() -> list[Path]:
     return result
 
 
+# 推荐的“靠谱”模型（中文演唱/中文歌词质量优先，按性价比排序）。
+# 只暴露这几个，避免把 tiny/base/small/medium/large-v1/v2/turbo 等
+# 不适合中文演唱的模型全堆进下拉框，让用户无从选择。
+# 命中这些名字时 whisper 会自动下载；用户也可手动下到 audio_encoders。
+_CURATED_MODEL_NAMES = (
+    "large-v3",        # 中文演唱/歌词最准（约 3GB，稍慢）
+    "large-v3-turbo",  # 兼容已下载的第三方 turbo 权重；无本地文件时映射官方 turbo
+    "medium",          # 轻量均衡，显存小或追求速度时可选（约 1.5GB）
+)
+
+_DOWNLOAD_MODEL_ALIASES = {
+    "large-v3-turbo": "turbo",
+    "large-v3-turbo.pt": "turbo",
+}
+
+
 def model_choices() -> list[str]:
-    choices = list(_MODEL_ALIASES)
+    choices: list[str] = []
+    # 1) 本地已下载的 .pt 文件优先展示（用户手头实际可用的）
     for directory in local_model_dirs():
         if not directory.is_dir():
             continue
@@ -91,7 +108,20 @@ def model_choices() -> list[str]:
             name = path.name
             if name not in choices:
                 choices.append(name)
+    # 2) 补齐推荐的“名字”项；若本地已有同名 .pt 则不重复列出
+    for name in _CURATED_MODEL_NAMES:
+        if name not in choices and (name + ".pt") not in choices:
+            choices.append(name)
     return choices
+
+
+def preferred_music_model(choices: list[str] | None = None) -> str:
+    """Prefer the strongest installed checkpoint, then a downloadable alias."""
+    available = list(choices or model_choices())
+    for preferred in ("large-v3.pt", "large-v3", "large-v3-turbo.pt", "large-v3-turbo", "turbo", "medium"):
+        if preferred in available:
+            return preferred
+    return available[0] if available else "large-v3"
 
 
 def _resolve_local_model(model_name: str, explicit_path: str, auto_download: bool) -> tuple[str, bool]:
@@ -123,8 +153,9 @@ def _resolve_local_model(model_name: str, explicit_path: str, auto_download: boo
             if pt_candidate.is_file():
                 return str(pt_candidate.resolve()), False
 
-    if auto_download and selected in _MODEL_ALIASES:
-        return selected, True
+    download_alias = _DOWNLOAD_MODEL_ALIASES.get(selected, selected)
+    if auto_download and download_alias in _MODEL_ALIASES:
+        return download_alias, True
     raise FileNotFoundError(
         "没有找到本地 Whisper 模型。请把 .pt 模型放到 "
         "ComfyUI/models/audio_encoders，或打开“允许自动下载模型”。"
@@ -323,7 +354,7 @@ def _merge_segments(segments: list[dict[str, Any]], max_seconds: float) -> list[
     return merged
 
 
-def _format_timeline(segments: list[dict[str, Any]], mappings: dict[str, dict[str, Any]]) -> str:
+def _format_timeline(segments: list[dict[str, Any]], mappings: dict[str, dict[str, Any]], singing: bool = False) -> str:
     lines = []
     if mappings:
         mappings_text = "；".join(
@@ -337,15 +368,50 @@ def _format_timeline(segments: list[dict[str, Any]], mappings: dict[str, dict[st
         mapping = mappings.get(speaker) or {}
         picture = mapping.get("picture") or f"<Picture {speaker[1:]}>"
         subject = mapping.get("subject") or f"<Subject {speaker[1:]}>"
+        language = str(segment.get("language") or "Chinese")
+        if singing:
+            language = {
+                "Chinese": "Mandarin singing",
+                "English": "English singing",
+                "Japanese": "Japanese singing",
+                "Korean": "Korean singing",
+                "Unknown": "Mandarin singing",
+            }.get(language, f"{language} singing")
+        else:
+            language = language or "Chinese"
         lines.append(
             f"{float(segment['start']):.2f}-{float(segment['end']):.2f} 秒 | "
             f"{speaker} | {picture} | {subject}"
         )
-        lines.append(
-            f"<d>[{segment.get('language') or 'Chinese'}]{segment.get('text')}</d>"
-        )
+        lines.append(f"<d>[{language}]{segment.get('text')}</d>")
         lines.append("")
     return "\n".join(lines).strip()
+
+
+def _is_music_hallucination(text: str) -> bool:
+    """Whisper 对纯音乐/间奏段的典型幻听：整段只有同一个词反复重复。
+
+    例如 small 的“作曲 作曲 作曲…”、large-v3-turbo 的“李宗盛 李宗盛…”，
+    都与真实歌词无关。只要整段文本退化成单一词重复（≥2 次）就判定为幻听丢弃。
+    """
+    normalized = re.sub(r"\s+", "", str(text or "")).lower()
+    known_noise = (
+        "请不吝点赞订阅转发打赏支持明镜与点点栏目",
+        "字幕由amara社区提供",
+        "订阅我的频道",
+        "谢谢观看",
+        "感谢观看",
+        "thanksforwatching",
+        "pleasesubscribe",
+        "subtitlesby",
+    )
+    if any(marker in normalized for marker in known_noise):
+        return True
+    tokens = re.findall(r"[\u3400-\u9fff]{2,}|[A-Za-z]{3,}", str(text or ""))
+    if len(tokens) < 2:
+        return False
+    first = tokens[0].lower()
+    return all(token.lower() == first for token in tokens)
 
 
 def transcribe_audio(
@@ -358,6 +424,7 @@ def transcribe_audio(
     speaker_timeline: str = "",
     max_segment_seconds: float = 8.0,
     merge_short_segments: bool = True,
+    singing: bool = False,
 ) -> dict[str, Any]:
     """Transcribe a ComfyUI AUDIO value and return prompt-ready dialogue data."""
     import torch
@@ -403,7 +470,11 @@ def transcribe_audio(
             continue
         no_speech = float(raw.get("no_speech_prob") or 0.0)
         avg_logprob = float(raw.get("avg_logprob") or 0.0)
-        if no_speech >= 0.75 or avg_logprob <= -1.5:
+        compression = float(raw.get("compression_ratio") or 0.0)
+        if no_speech >= 0.75 or avg_logprob <= -1.5 or compression > 2.4:
+            continue
+        if _is_music_hallucination(text):
+            # 纯音乐段幻听（同词反复），与真实歌词无关，丢弃
             continue
         start = max(0.0, float(raw.get("start") or 0.0))
         end = max(start + 0.05, float(raw.get("end") or start))
@@ -427,7 +498,7 @@ def transcribe_audio(
         )
     if merge_short_segments:
         segments = _merge_segments(segments, max(1.0, float(max_segment_seconds or 8.0)))
-    timeline = _format_timeline(segments, mappings)
+    timeline = _format_timeline(segments, mappings, singing=bool(singing))
     unmatched = [
         segment for segment in segments
         if mappings and not any(

@@ -41,8 +41,9 @@
 - `skills/image-prompt-reverse/`：分析实际参考图片并反推可复用的图片生成提示词。
 - `skills/video-prompt-reverse/`：分析实际参考视频并反推 MiniMax H3 Ref2VA 六段式提示词。
 - `skills/h3-six-segment-standard/`：强制生成 MiniMax H3 六段式标准提示词。
-- `skills/text-to-image-prompt/`：生成文生图图片提示词、视觉拆解和负面约束。
-- `skills/first-last-frame-image-prompt/`：根据首帧和尾帧参考图生成连续图片或中间帧提示词。
+- `skills/text-to-image-prompt/`：生成可直接复制粘贴的单段文生图提示词。
+- `skills/first-last-frame-image-prompt/`：根据首帧和尾帧参考图生成单段连续生图提示词。
+- `skills/audio-prompt-reverse/`：识别歌曲真实歌词和时间码，生成可直接用于 11 号 MiniMax H3 数字人工作流的六段式提示词。
 - 来源：本项目原创；随插件按 GPL-3.0-or-later 分发。
 - 反推 Skill 只提供提示词分析与结构化方法，不授予输入图片、视频、真人、品牌、角色、音乐或生成结果的使用权。
 

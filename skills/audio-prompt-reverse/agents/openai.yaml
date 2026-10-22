@@ -1,0 +1,4 @@
+interface:
+  display_name: "数字人提示词生成"
+  short_description: "根据人物演唱图和歌曲音频，生成带真实时间码歌词、可直接粘贴到 11 号 MiniMax H3 数字人工作流的六段式提示词。"
+  default_prompt: "识别歌曲音频中带时间码的歌词，结合 <Picture 1> 中的人物，生成可直接用于 MiniMax H3 数字人模式的六段式提示词。"

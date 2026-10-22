@@ -15,24 +15,29 @@ const EXPANDER_NODE = "AICG3D_SKILLS_PromptExpander";
 const SKILL_MANAGER_NODE = "AICG3D_SKILLS_SkillManager";
 const QUICK_TASK_WIDGET = "反推快捷任务";
 const QUICK_TASK_UI_WIDGET = "快捷任务";
-const QUICK_TASKS = ["普通创作", "图片反推提示词", "视频反推提示词"];
+const DIGITAL_HUMAN_PROMPT_TASK = "数字人提示词生成";
+const LEGACY_AUDIO_REVERSE_TASK = "音频反推提示词";
+const QUICK_TASKS = ["普通创作", "图片反推提示词", "视频反推提示词", DIGITAL_HUMAN_PROMPT_TASK];
 const QUICK_TASK_SKILL_IDS = {
     "图片反推提示词": "image-prompt-reverse",
     "视频反推提示词": "video-prompt-reverse",
+    [DIGITAL_HUMAN_PROMPT_TASK]: "audio-prompt-reverse",
+    [LEGACY_AUDIO_REVERSE_TASK]: "audio-prompt-reverse",
 };
 const QUICK_TASK_PROMPTS = {
     "图片反推提示词": "分析 <Picture 1>，只生成一段可直接复制粘贴的图片生成提示词。",
     "视频反推提示词": "分析 <Video 1> 的镜头、动作、连续性和声音，只输出 MiniMax H3 Ref2VA 六段式正文。",
+    [DIGITAL_HUMAN_PROMPT_TASK]: "识别歌曲中的歌词和真实时间码，结合 <Picture 1> 中的人物，生成可直接粘贴到 11 号数字人工作流的 MiniMax H3 六段式正文。",
+    [LEGACY_AUDIO_REVERSE_TASK]: "识别歌曲中的歌词和真实时间码，结合 <Picture 1> 中的人物，生成可直接粘贴到 11 号数字人工作流的 MiniMax H3 六段式正文。",
 };
-const QUICK_TASK_HIDDEN_FIELDS = [
-    "任务模式",
-    "输出画幅",
-    "视频时长",
-    "动作强度",
-    "技能重点",
-    "技能包",
-    "无模型时生成模板",
-];
+const QUICK_TASK_HIDDEN_FIELDS = {
+    "图片反推提示词": ["任务模式", "输出画幅", "视频时长", "动作强度", "技能重点", "技能包", "无模型时生成模板", "音频反推模型"],
+    "视频反推提示词": ["任务模式", "输出画幅", "视频时长", "动作强度", "技能重点", "技能包", "无模型时生成模板", "音频反推模型"],
+    [DIGITAL_HUMAN_PROMPT_TASK]: ["任务模式", "视频时长", "动作强度", "技能重点", "技能包", "无模型时生成模板"],
+    [LEGACY_AUDIO_REVERSE_TASK]: ["任务模式", "视频时长", "动作强度", "技能重点", "技能包", "无模型时生成模板"],
+    "普通创作": ["音频反推模型"],
+};
+const QUICK_TASK_ALL_FIELDS = ["任务模式", "输出画幅", "视频时长", "动作强度", "技能重点", "技能包", "无模型时生成模板", "音频反推模型"];
 const H3_STANDARD_MODE = "H3 六段式标准提示词";
 const T2I_MODE = "文生图（T2I）";
 const FL2I_MODE = "首尾帧生图（FL2I）";
@@ -555,8 +560,23 @@ function configureSettingsNodeWidgets(node) {
     requestAnimationFrame(() => syncSettingsNodeWidgetVisibility(node));
 }
 
+function normalizeQuickTask(value) {
+    const task = String(value || "普通创作");
+    return task === LEGACY_AUDIO_REVERSE_TASK ? DIGITAL_HUMAN_PROMPT_TASK : task;
+}
+
+function quickTaskStorageValue(task, hiddenWidget = null) {
+    if (task !== DIGITAL_HUMAN_PROMPT_TASK) return task;
+    const accepted = hiddenWidget?.options?.values;
+    if (Array.isArray(accepted)) {
+        if (accepted.includes(DIGITAL_HUMAN_PROMPT_TASK)) return DIGITAL_HUMAN_PROMPT_TASK;
+        if (accepted.includes(LEGACY_AUDIO_REVERSE_TASK)) return LEGACY_AUDIO_REVERSE_TASK;
+    }
+    return DIGITAL_HUMAN_PROMPT_TASK;
+}
+
 function quickTaskValue(node) {
-    return String(widgetByName(node, QUICK_TASK_WIDGET)?.value || "普通创作");
+    return normalizeQuickTask(widgetByName(node, QUICK_TASK_WIDGET)?.value);
 }
 
 function skillItemForId(skillId) {
@@ -579,6 +599,8 @@ function applyTaskModeBehavior(node, value = "") {
     const specialSkillId = TASK_MODE_SKILL_IDS[mode];
     const special = Boolean(specialSkillId);
     const imageMode = mode === T2I_MODE || mode === FL2I_MODE;
+    const lyricModelWidget = widgetByName(node, "音频反推模型");
+    if (lyricModelWidget) lyricModelWidget.label = "歌词识别模型";
     const promptWidget = widgetByName(node, "创意描述");
     const currentPrompt = String(promptWidget?.value || "");
     const previousDefault = String(node.__aicg3dTaskModePrompt || "");
@@ -645,7 +667,8 @@ function configureTaskModeBehavior(node) {
 
 function applyQuickTaskMode(node, value = quickTaskValue(node)) {
     if (!node) return;
-    const task = QUICK_TASKS.includes(value) ? value : "普通创作";
+    const normalizedValue = normalizeQuickTask(value);
+    const task = QUICK_TASKS.includes(normalizedValue) ? normalizedValue : "普通创作";
     const reverse = task !== "普通创作";
     const promptWidget = widgetByName(node, "创意描述");
     const previousDefault = String(node.__aicg3dQuickTaskPrompt || "");
@@ -665,9 +688,11 @@ function applyQuickTaskMode(node, value = quickTaskValue(node)) {
     }
     node.__aicg3dQuickTaskPrompt = nextDefault;
 
-    for (const field of QUICK_TASK_HIDDEN_FIELDS) {
+    const hiddenFields = QUICK_TASK_HIDDEN_FIELDS[task] || [];
+    const hiddenSet = new Set(hiddenFields);
+    for (const field of QUICK_TASK_ALL_FIELDS) {
         const widget = widgetByName(node, field);
-        if (reverse) hideNodeWidget(widget);
+        if (hiddenSet.has(field)) hideNodeWidget(widget);
         else showNodeWidget(widget);
     }
 
@@ -701,6 +726,8 @@ function applyQuickTaskMode(node, value = quickTaskValue(node)) {
         node.__aicg3dQuickTaskPrevious = null;
     }
 
+    const storedWidget = widgetByName(node, QUICK_TASK_WIDGET);
+    setWidget(node, [QUICK_TASK_WIDGET], quickTaskStorageValue(task, storedWidget));
     const ui = widgetByName(node, QUICK_TASK_UI_WIDGET);
     if (ui && ui.value !== task) ui.value = task;
     if (!reverse) applyTaskModeBehavior(node, String(widgetByName(node, "任务模式")?.value || ""));
@@ -721,15 +748,19 @@ function configureQuickTaskMode(node) {
         return;
     }
     node.__aicg3dQuickTaskConfigured = true;
+    const storedTask = String(hidden.value || "普通创作");
+    if (storedTask === DIGITAL_HUMAN_PROMPT_TASK || storedTask === LEGACY_AUDIO_REVERSE_TASK) {
+        setWidget(node, [QUICK_TASK_WIDGET], quickTaskStorageValue(DIGITAL_HUMAN_PROMPT_TASK, hidden));
+    }
     hideNodeWidget(hidden);
 
     let ui = widgetByName(node, QUICK_TASK_UI_WIDGET);
     if (!ui) {
         ui = node.addWidget("combo", QUICK_TASK_UI_WIDGET, quickTaskValue(node), (value) => {
-            setWidget(node, [QUICK_TASK_WIDGET], value);
+            setWidget(node, [QUICK_TASK_WIDGET], quickTaskStorageValue(normalizeQuickTask(value), hidden));
         }, {
             values: QUICK_TASKS,
-            tooltip: "普通创作保留完整参数；图片/视频反推会自动加载专用 Skill，并隐藏无关参数。",
+            tooltip: "普通创作保留完整参数；图片/视频反推与数字人提示词生成会自动加载专用 Skill，并隐藏无关参数。",
         });
     }
     if (!ui) {
@@ -1318,7 +1349,7 @@ function openSkillHelp(node) {
     body.className = "aicg3d-skills-body aicg3d-skills-help";
     const lead = document.createElement("p");
     lead.className = "aicg3d-skills-help-lead";
-    lead.textContent = "普通创作只需填写“创意描述”并选择 Skill；如果要分析现成图片或视频，直接在“快捷任务”里选“图片反推提示词”或“视频反推提示词”，插件会自动加载专用 Skill 并隐藏无关参数。";
+    lead.textContent = "普通创作只需填写“创意描述”并选择 Skill；如果要从图片、视频或歌曲生成提示词，直接在“快捷任务”里选择对应模式。数字人提示词生成会自动识别歌词时间码，并输出可粘贴到 11 号数字人工作流的内容。";
     body.append(
         lead,
         helpSection("截图里的五个字段", [
@@ -1337,8 +1368,9 @@ function openSkillHelp(node) {
         helpSection("快捷任务（推荐）", [
             helpRow("图片反推提示词", "把图片接到“参考图片”或 AICG3D 资源库。选择后只输出一段可直接复制粘贴的图片生成提示词，不附带摘要、拆解或参考用法。"),
             helpRow("视频反推提示词", "把视频接到 AICG3D 资源库。选择后只输出 MiniMax H3 Ref2VA 六个正式字段，不附加镜头时间线、分析、合规说明或操作建议。"),
+            helpRow("数字人提示词生成", "把歌曲音频接到“音频”输入、人物演唱图接到“参考图片”。插件自动识别带真实时间码的歌词，输出含逐段 <d> 歌词和口型同步的 MiniMax H3 六段式正文，可直接粘贴到 11 号数字人工作流。"),
             helpRow("普通创作", "恢复任务模式、画幅、时长、动作强度、技能重点和技能包等完整参数；之前手动选择的技能会自动恢复。"),
-            helpRow("模型要求", "图片和视频反推必须配置支持视觉的线上模型或本地视觉模型；不能用“无模型时生成模板”代替真实分析。"),
+            helpRow("模型要求", "图片/视频反推和数字人提示词生成必须配置支持视觉的线上模型或本地视觉模型；数字人模式另需本机安装 whisper 及 .pt 模型。不能用“无模型时生成模板”代替真实分析。"),
         ]),
             helpRow("默认导演", "保留“minimax-h3-short-drama-director”适合大多数短剧、打斗、对白和多段连续性任务。"),
             helpRow("创意 DNA", "技能库新增了 284 个 T8 机制 Skill，包括产品广告、连续追逐、品牌宣传、微表情、材质变身、角色登场等。搜索中文用途后点“使用”即可套到当前节点。"),

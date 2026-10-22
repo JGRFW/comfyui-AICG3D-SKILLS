@@ -19,13 +19,36 @@ MODES = tuple(composer.MODE_TO_TASK)
 ASPECTS = tuple(composer.RATIO_VALUES)
 INTENSITIES = tuple(composer.INTENSITY_TEXT)
 OUTPUT_LANGUAGES = ("中文", "English")
-QUICK_TASKS = ("普通创作", "图片反推提示词", "视频反推提示词")
+DIGITAL_HUMAN_PROMPT_TASK = "数字人提示词生成"
+LEGACY_AUDIO_REVERSE_TASK = "音频反推提示词"
+QUICK_TASKS = ("普通创作", "图片反推提示词", "视频反推提示词", DIGITAL_HUMAN_PROMPT_TASK, LEGACY_AUDIO_REVERSE_TASK)
 LOCAL_DEVICES = ("cuda", "cpu")
 PROVIDERS = tuple(optimizer.PROVIDERS)
 
 
 def _as_text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _content_fingerprint(value: Any) -> str:
+    """Stable cache key for AUDIO/IMAGE tensors and ComfyUI audio mappings."""
+    if value is None:
+        return "none"
+    if isinstance(value, dict):
+        waveform = value.get("waveform")
+        if waveform is not None:
+            return f"{_content_fingerprint(waveform)}|rate={value.get('sample_rate')}"
+        images = value.get("images")
+        if images is not None:
+            return _content_fingerprint(images)
+    if hasattr(value, "detach") and hasattr(value, "shape"):
+        try:
+            tensor = value.detach().to("cpu").contiguous()
+            digest = hashlib.sha256(tensor.numpy().tobytes()).hexdigest()
+            return f"{tuple(tensor.shape)}|{tensor.dtype}|{digest}"
+        except Exception:
+            return repr(value)
+    return repr(value)
 
 
 def _decode_json(value: Any) -> dict[str, Any]:
@@ -169,6 +192,23 @@ def _audio_description(value: Any) -> str:
         return f"音频参考，约 {duration:.2f} 秒，采样率 {int(sample_rate)} Hz；用于参考音色、节奏或声音氛围。"
     except Exception:
         return "音频参考，用于参考音色、节奏或声音氛围。"
+
+
+def _bundle_audio(bundle: Any) -> Any:
+    """Extract the first audio value from a MiniMaxH3MediaBundle-like object."""
+    for item in _bundle_items(bundle):
+        media_type, value = _bundle_fields(item)
+        if media_type == "audio" and value is not None:
+            return value
+    return None
+
+
+def _bundle_content_fingerprint(bundle: Any) -> str:
+    parts = []
+    for item in _bundle_items(bundle):
+        media_type, value = _bundle_fields(item)
+        parts.append(f"{media_type}:{_content_fingerprint(value)}")
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest() if parts else "empty"
 
 
 def _references_from_media_bundle(bundle: Any) -> list[dict[str, Any]]:
@@ -642,8 +682,16 @@ class AICG3DSkillPromptExpander:
         config = kwargs.get("模型设置JSON") or json.dumps(optimizer.load_config(), ensure_ascii=False, sort_keys=True)
         catalog = json.dumps(skills.payload(), ensure_ascii=False, sort_keys=True)
         dialogue_timeline = str(kwargs.get("台词时间线") or "")
+        quick_task = _as_text(kwargs.get("反推快捷任务")) or "普通创作"
+        audio = kwargs.get("音频") or _bundle_audio(kwargs.get("AICG3D资源库"))
+        material_fingerprint = "|".join((
+            _content_fingerprint(audio),
+            _content_fingerprint(kwargs.get("参考图片")),
+            _bundle_content_fingerprint(kwargs.get("AICG3D资源库")),
+            _as_text(kwargs.get("音频反推模型")),
+        ))
         return hashlib.sha256(
-            f"{config}|{catalog}|{dialogue_timeline}".encode("utf-8")
+            f"{config}|{catalog}|{dialogue_timeline}|{quick_task}|{material_fingerprint}".encode("utf-8")
         ).hexdigest()
     RETURN_TYPES = ("STRING", "STRING", "STRING")
     RETURN_NAMES = ("H3提示词", "H3请求JSON", "运行状态")
@@ -652,12 +700,13 @@ class AICG3DSkillPromptExpander:
         "截图中的四个项目是高级连线条目：参考素材JSON 来自“参考素材整理”；"
         "技能重点输入和技能包输入来自“技能选择器”；模型设置JSON 来自“模型设置”。"
         "额外要求用于填写必须遵守的自然语言限制。点击节点上的“使用说明”可查看完整填写顺序。"
-        "“快捷任务”可在图片反推、视频反推和普通创作之间切换；反推模式会自动加载专用 Skill 并隐藏无关参数。"
+        "“快捷任务”可在普通创作、图片反推、视频反推和数字人提示词生成之间切换；专用模式会自动加载对应 Skill 并隐藏无关参数。"
     )
 
     @classmethod
     def INPUT_TYPES(cls):
         defaults = optimizer.load_config()
+        audio_models = dialogue.model_choices()
         return {
             "required": {
                 "创意描述": (
@@ -705,7 +754,7 @@ class AICG3DSkillPromptExpander:
                     list(QUICK_TASKS),
                     {
                         "default": "普通创作",
-                        "tooltip": "图片反推会分析实际图片并生成图片提示词；视频反推会分析实际视频并生成 H3 Ref2VA 六段式提示词。",
+                        "tooltip": "图片/视频反推会生成对应提示词；数字人提示词生成会识别歌词时间码，输出可直接粘贴到 11 号数字人工作流的 H3 六段式正文。",
                     },
                 ),
             },
@@ -760,19 +809,36 @@ class AICG3DSkillPromptExpander:
                     MEDIA_BUNDLE_TYPE,
                     {"tooltip": "从 MiniMax H3 Aicg资源库 的 AICG3D 输出接入，支持多图、多视频和多音频。"},
                 ),
+                "音频": (
+                    "AUDIO",
+                    {"tooltip": "数字人提示词生成用：接入歌曲音频，自动识别带时间码的歌词并写入 11 号数字人提示词。"},
+                ),
+                "音频反推模型": (
+                    audio_models,
+                    {
+                        "default": dialogue.preferred_music_model(audio_models),
+                        "tooltip": "数字人提示词生成使用的歌词识别模型；通常 large-v3.pt 最准，large-v3-turbo 更快。",
+                    },
+                ),
             },
         }
 
     def run(self, **kwargs):
         quick_task = _as_text(kwargs.get("反推快捷任务")) or "普通创作"
+        if quick_task == LEGACY_AUDIO_REVERSE_TASK:
+            quick_task = DIGITAL_HUMAN_PROMPT_TASK
         image_reverse = quick_task == "图片反推提示词"
         video_reverse = quick_task == "视频反推提示词"
-        reverse_task = image_reverse or video_reverse
+        audio_reverse = quick_task == DIGITAL_HUMAN_PROMPT_TASK
+        reverse_task = image_reverse or video_reverse or audio_reverse
         idea = _as_text(kwargs.get("创意描述"))
         if not idea and image_reverse:
             idea = "分析实际参考图片，只生成一段可直接复制粘贴的图片生成提示词。"
         elif not idea and video_reverse:
             idea = "分析实际参考视频的镜头、动作、连续性、节奏和声音，反推出 MiniMax H3 Ref2VA 六段式提示词。"
+        elif not idea and audio_reverse:
+            idea = "识别实际参考音频中带时间码的歌词，结合人物演唱图，生成可直接粘贴到 11 号数字人工作流的 MiniMax H3 六段式提示词。"
+        lyric_timeline = ""
         idea = idea or "人物在同一空间中展开行动"
         mode = _as_text(kwargs.get("任务模式")) or "Ref2VA 全能参考（推荐）"
         h3_standard_mode = mode == "H3 六段式标准提示词"
@@ -792,6 +858,10 @@ class AICG3DSkillPromptExpander:
             skill_id = skills.VIDEO_REVERSE_SKILL_ID
             mode = "Ref2VA 全能参考（推荐）"
             focus = "镜头与分镜"
+        elif audio_reverse:
+            skill_id = skills.AUDIO_REVERSE_SKILL_ID
+            mode = "Ref2VA 全能参考（推荐）"
+            focus = "自动选择"
         elif h3_standard_mode:
             skill_id = skills.H3_STANDARD_SKILL_ID
             focus = "全流程导演"
@@ -803,7 +873,7 @@ class AICG3DSkillPromptExpander:
             focus = "镜头与分镜"
         extra = _as_text(kwargs.get("额外要求"))
         dialogue_timeline = _as_text(kwargs.get("台词时间线"))
-        if dialogue_timeline:
+        if dialogue_timeline and not audio_reverse:
             dialogue_rule = (
                 "原视频台词识别结果（必须逐字使用，不得改写、翻译或新增对白；"
                 "保持时间码、说话人和 Subject/Picture 映射）：\n"
@@ -835,6 +905,43 @@ class AICG3DSkillPromptExpander:
                 references = composer.infer_idea_references(idea)
             references = _attach_images(references, kwargs.get("参考图片"))
 
+        if audio_reverse:
+            if not any(
+                str(item.get("kind") or "image").lower() == "image" and item.get("images")
+                for item in references
+            ):
+                raise RuntimeError("数字人提示词生成需要一张人物演唱参考图：请连接“参考图片”或从 AICG3D 资源库接入图片。")
+            lyric_timeline = dialogue_timeline
+            if not lyric_timeline:
+                audio_input = kwargs.get("音频")
+                if audio_input is None:
+                    audio_input = _bundle_audio(kwargs.get("AICG3D资源库"))
+                if audio_input is None:
+                    raise RuntimeError(
+                        "数字人提示词生成需要接入歌曲音频：请把音频连接到“音频”输入，或上传到 AICG3D 资源库（插件会自动转写歌词），"
+                        "或先用“视频台词识别”节点生成台词时间线并接到“台词时间线”输入。"
+                    )
+                transcribe_model = _as_text(kwargs.get("音频反推模型")) or dialogue.preferred_music_model()
+                transcribed = dialogue.transcribe_audio(
+                    audio_input,
+                    model_name=transcribe_model,
+                    singing=True,
+                    auto_download=True,
+                )
+                lyric_timeline = transcribed["timeline"]
+                if not lyric_timeline.strip():
+                    raise RuntimeError(
+                        "没有识别到可用歌词。请改用 large-v3.pt，或先用“视频台词识别”整理歌词时间线，再接到“台词时间线”输入。"
+                    )
+            audio_rule = (
+                "这是 MiniMax H3 数字人提示词生成任务：<Picture 1> 中的人物作为数字人主体 <Subject 1>。"
+                "歌曲音频由 11 号工作流的数字人模式全局锁定，retention_analysis 写成“锁定歌曲音轨: fully_copy - ...”。"
+                "最终提示词中禁止出现 <Audio N> 标签，因为数字人节点会删除它们并留下残缺字段。"
+                "以下是从音频识别出的带时间码歌词，已经是最终定稿：必须逐字原样写入 detailed_description 的 <d> 行，"
+                "禁止重新转写、改写、翻译、拆句或合并。每个时间段写成一行时间范围加一条紧凑的 <d>[Mandarin singing] 原歌词</d>。\n"
+                + lyric_timeline
+            )
+            extra = f"{extra}\n\n{audio_rule}".strip()
         if image_reverse and not any(
             str(item.get("kind") or "image").lower() == "image" and item.get("images")
             for item in references
@@ -851,7 +958,7 @@ class AICG3DSkillPromptExpander:
         ) < 2:
             raise RuntimeError("首尾帧生图需要两张实际图片：<Picture 1> 作为首帧，<Picture 2> 作为尾帧。")
         if reverse_task and not _config_ready(config):
-            raise RuntimeError("图片/视频反推需要视觉模型：请先点击“模型设置”，配置支持视觉的线上模型或本地视觉模型。")
+            raise RuntimeError("图片/视频反推和数字人提示词生成需要视觉模型：请先点击“模型设置”，配置支持视觉的线上模型或本地视觉模型。")
         context, used_references, selected_skill_id = skills.build_context(
             idea,
             focus,
@@ -861,6 +968,7 @@ class AICG3DSkillPromptExpander:
         optimizer_task = (
             "IMAGE_REVERSE" if image_reverse
             else "VIDEO_REVERSE" if video_reverse
+            else "AUDIO_REVERSE" if audio_reverse
             else composer.MODE_TO_TASK.get(mode, "Ref2VA")
         )
         output_goal = (
@@ -868,6 +976,14 @@ class AICG3DSkillPromptExpander:
             if image_reverse
             else "请严格依据实际视频证据，只输出 MiniMax H3 Ref2VA 六段式正文。不要镜头时间线、说明、分析或额外解释。"
             if video_reverse
+            else (
+                "请只输出可直接粘贴到 11 号数字人工作流的 MiniMax H3 六段式正文。把 <Picture 1> 中的人物定义为 "
+                "<Subject 1>（S1），歌曲使用 11 号工作流锁定的全局音轨；retention_analysis 写“锁定歌曲音轨: fully_copy - ...”。"
+                "禁止输出 <Audio N> 标签。把识别歌词按真实时间码逐字写入 detailed_description，每段写成时间范围、"
+                "<Subject 1> 演唱动作和一条 <d>[Mandarin singing] 原歌词</d>，让口型与每个时间段逐字同步。"
+                "不要镜头时间线、分析、说明或额外解释。"
+            )
+            if audio_reverse
             else "请只输出 MiniMax H3 六段式标准提示词正文，不要合并、省略或添加任何说明。"
             if h3_standard_mode
             else "请只输出一段可直接复制粘贴的文生图提示词。不要结构拆解、负面约束说明、视频六段式或额外解释。"
@@ -912,6 +1028,7 @@ class AICG3DSkillPromptExpander:
                     "media": request_payload["media"],
                     "context": {},
                     "system": context,
+                    "lyric_timeline": lyric_timeline,
                 },
             )
             status = f"已使用{'本地模型' if config.get('mode') == 'local' else config.get('provider') or '线上 API'}生成；加载 {len(used_references)} 份 Skill 规则。"
@@ -939,6 +1056,9 @@ class AICG3DSkillPromptExpander:
             "model": config.get("model"),
             "local_model": config.get("local_model"),
         }
+        if audio_reverse and lyric_timeline:
+            request_payload["lyric_timeline"] = lyric_timeline
+            status = f"{status}\n\n[识别歌词与时间码]\n{lyric_timeline}".strip()
         public_payload = dict(request_payload)
         public_payload["media"] = _strip_media_binary(request_payload.get("media") or [])
         public_payload["references"] = _strip_media_binary(request_payload.get("references") or [])
