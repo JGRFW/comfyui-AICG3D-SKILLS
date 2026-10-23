@@ -1,3 +1,5 @@
+<img width="1890" height="958" alt="image" src="https://github.com/user-attachments/assets/768ad1a7-8c5b-41cb-953c-d829536cc41a" />
+
 # comfyui-AICG3D-SKILLS
 
 ![license](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)
