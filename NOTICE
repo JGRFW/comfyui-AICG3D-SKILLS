@@ -7,6 +7,7 @@
 - T8 Creative DNA Skill：代码 MIT；原创摘要、Creative DNA 与提示词模板 CC BY 4.0。
 - character-refs Skill：Apache-2.0，作者标识 X：`@eternityspring`。
 - Goohai 上游组件：GPL-3.0-or-later。
+- 男女声分类模型：`7wolf/wav2vec2-base-gender-classification`，Apache-2.0；权重不随仓库打包，可由插件按需下载。
 - 预览媒体不随本项目重新许可，权利归原作者和来源平台。
 - 两个作者和许可证未确认的本地 Skill 已于 2026-10-10 移除，不随本项目分发。
 

@@ -211,6 +211,69 @@ def _bundle_content_fingerprint(bundle: Any) -> str:
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest() if parts else "empty"
 
 
+def _infer_digital_human_roles(idea: str, references: list[dict[str, Any]]) -> dict[str, Any]:
+    """Infer male/female singer pictures and a shared scene from the user's text."""
+    text = str(idea or "")
+    image_numbers = []
+    for item in references:
+        match = re.search(r"<(?:Picture|Image)\s+(\d+)>|(?:图片|图)\s*(\d+)", str(item.get("label") or ""), re.I)
+        if match:
+            number = int(match.group(1) or match.group(2))
+            if number not in image_numbers:
+                image_numbers.append(number)
+    mentions = list(re.finditer(r"<(?:Picture|Image)\s+(\d+)>|(?:图片|图)\s*(\d+)", text, re.I))
+    male_picture = female_picture = scene_picture = ""
+    for index, match in enumerate(mentions):
+        number = int(match.group(1) or match.group(2))
+        end = mentions[index + 1].start() if index + 1 < len(mentions) else min(len(text), match.end() + 40)
+        context = text[match.end():max(match.end(), end)]
+        label = f"<Picture {number}>"
+        if re.search(r"男|male|man|boy|先生", context, re.I):
+            male_picture = label
+        if re.search(r"女|female|woman|girl|女士", context, re.I):
+            female_picture = label
+        if re.search(r"场景|背景|环境|舞台|scene|background|environment", context, re.I):
+            scene_picture = label
+    duet_words = bool(re.search(r"男声|女声|男女|男生|女生|男子|女子|合唱|对唱|duet", text, re.I))
+    if len(image_numbers) >= 2 and duet_words:
+        if not male_picture:
+            male_picture = f"<Picture {image_numbers[0]}>"
+        if not female_picture:
+            remaining = [number for number in image_numbers if f"<Picture {number}>" != male_picture]
+            if remaining:
+                female_picture = f"<Picture {remaining[0]}>"
+    if duet_words and len(image_numbers) >= 3 and not scene_picture:
+        remaining = [
+            number for number in image_numbers
+            if f"<Picture {number}>" not in {male_picture, female_picture}
+        ]
+        if remaining:
+            scene_picture = f"<Picture {remaining[0]}>"
+    duet = bool(male_picture and female_picture and male_picture != female_picture)
+
+    def mapping(label: str, gender: str) -> dict[str, str]:
+        number = int(re.search(r"\d+", label).group(0))
+        return {
+            "speaker": f"S{number}",
+            "picture": label,
+            "subject": f"<Subject {number}>",
+            "gender": gender,
+        }
+
+    result: dict[str, Any] = {"duet": duet}
+    if male_picture:
+        result["male"] = mapping(male_picture, "male")
+    if female_picture:
+        result["female"] = mapping(female_picture, "female")
+    if scene_picture:
+        scene_number = int(re.search(r"\d+", scene_picture).group(0))
+        result["scene"] = {
+            "picture": scene_picture,
+            "subject": f"<Subject {scene_number}>",
+        }
+    return result
+
+
 def _references_from_media_bundle(bundle: Any) -> list[dict[str, Any]]:
     """Adapt MiniMaxH3MediaBundle-like objects to the Skill reference schema."""
     references: list[dict[str, Any]] = []
@@ -700,7 +763,7 @@ class AICG3DSkillPromptExpander:
         "截图中的四个项目是高级连线条目：参考素材JSON 来自“参考素材整理”；"
         "技能重点输入和技能包输入来自“技能选择器”；模型设置JSON 来自“模型设置”。"
         "额外要求用于填写必须遵守的自然语言限制。点击节点上的“使用说明”可查看完整填写顺序。"
-        "“快捷任务”可在普通创作、图片反推、视频反推和数字人提示词生成之间切换；专用模式会自动加载对应 Skill 并隐藏无关参数。"
+        "“快捷任务”可在普通创作、图片反推、视频反推和数字人提示词生成之间切换；数字人模式会分开男女声，使用交替单人镜头和 MV 多角度运镜并隐藏无关参数。"
     )
 
     @classmethod
@@ -728,7 +791,7 @@ class AICG3DSkillPromptExpander:
                 ),
                 "视频时长": (
                     "FLOAT",
-                    {"default": 10.0, "min": 4.0, "max": 15.0, "step": 0.5, "tooltip": "MiniMax H3 单段有效时长为 4~15 秒。"},
+                    {"default": 10.0, "min": 4.0, "max": 15.0, "step": 0.5, "tooltip": "MiniMax H3 单段有效时长为 4~15 秒。数字人歌词识别仍会分析完整上传音频，不受此项限制。"},
                 ),
                 "动作强度": (
                     list(INTENSITIES),
@@ -754,7 +817,7 @@ class AICG3DSkillPromptExpander:
                     list(QUICK_TASKS),
                     {
                         "default": "普通创作",
-                        "tooltip": "图片/视频反推会生成对应提示词；数字人提示词生成会识别歌词时间码，输出可直接粘贴到 11 号数字人工作流的 H3 六段式正文。",
+                        "tooltip": "图片/视频反推会生成对应提示词；数字人提示词生成会识别歌词时间码，并用交替单人镜头分开男女声，每个歌词段只出现对应歌手，另一人完全在画外。",
                     },
                 ),
             },
@@ -817,7 +880,7 @@ class AICG3DSkillPromptExpander:
                     audio_models,
                     {
                         "default": dialogue.preferred_music_model(audio_models),
-                        "tooltip": "数字人提示词生成使用的歌词识别模型；通常 large-v3.pt 最准，large-v3-turbo 更快。",
+                        "tooltip": "数字人歌词识别模型；通常 large-v3.pt 最准，large-v3-turbo 更快。始终分析完整上传音频；男女声由 wav2vec2 性别模型结合音色聚类识别，模型不可用时才回退音高算法。",
                     },
                 ),
             },
@@ -839,6 +902,9 @@ class AICG3DSkillPromptExpander:
         elif not idea and audio_reverse:
             idea = "识别实际参考音频中带时间码的歌词，结合人物演唱图，生成可直接粘贴到 11 号数字人工作流的 MiniMax H3 六段式提示词。"
         lyric_timeline = ""
+        audio_analysis_status = ""
+        audio_analysis_meta: dict[str, Any] = {}
+        audio_reverse_context: dict[str, Any] = {}
         idea = idea or "人物在同一空间中展开行动"
         mode = _as_text(kwargs.get("任务模式")) or "Ref2VA 全能参考（推荐）"
         h3_standard_mode = mode == "H3 六段式标准提示词"
@@ -906,6 +972,7 @@ class AICG3DSkillPromptExpander:
             references = _attach_images(references, kwargs.get("参考图片"))
 
         if audio_reverse:
+            audio_reverse_context = _infer_digital_human_roles(idea, references)
             if not any(
                 str(item.get("kind") or "image").lower() == "image" and item.get("images")
                 for item in references
@@ -926,19 +993,108 @@ class AICG3DSkillPromptExpander:
                     audio_input,
                     model_name=transcribe_model,
                     singing=True,
+                    merge_short_segments=False,
                     auto_download=True,
+                    auto_gender_split=bool(audio_reverse_context.get("duet")),
+                    # 数字人歌词转写始终覆盖完整上传音频；视频时长只用于 H3 生成参数，不裁剪歌词。
+                    duet_mapping=audio_reverse_context,
                 )
+                if transcribed.get("duet_split"):
+                    audio_reverse_context["auto_gender_split"] = True
+                    audio_reverse_context["pitch_separation_hz"] = transcribed.get("pitch_separation_hz", 0)
+                    audio_reverse_context["vocal_separator_used"] = transcribed.get("vocal_separator_used", False)
                 lyric_timeline = transcribed["timeline"]
+                assigned_speakers = {
+                    str(segment.get("speaker") or "")
+                    for segment in transcribed.get("segments") or []
+                    if segment.get("speaker")
+                }
+                if not transcribed.get("duet_split") and len(assigned_speakers) == 1:
+                    only_speaker = next(iter(assigned_speakers))
+                    selected = (transcribed.get("mappings") or {}).get(only_speaker) or {}
+                    selected_picture = str(selected.get("picture") or "<Picture 1>")
+                    selected_subject = str(selected.get("subject") or "<Subject 1>")
+                    lyric_timeline = re.sub(
+                        rf"\|[ \t]*{re.escape(only_speaker)}[ \t]*\|[ \t]*{re.escape(selected_picture)}[ \t]*\|[ \t]*{re.escape(selected_subject)}[ \t]*",
+                        f"| S1 | {selected_picture} | <Subject 1>",
+                        lyric_timeline,
+                    )
+                    lyric_timeline = re.sub(
+                        r"(?m)^识别台词对应的说话人映射：.*$",
+                        f"单声部输出：S1 -> {selected_picture} -> <Subject 1>",
+                        lyric_timeline,
+                    )
+                    audio_reverse_context = {
+                        "duet": False,
+                        "single": {
+                            "speaker": "S1",
+                            "picture": selected_picture,
+                            "subject": "<Subject 1>",
+                            "gender": selected.get("gender"),
+                        },
+                        "auto_gender_split": False,
+                        "duet_split_confident": False,
+                        "duet_split_reason": transcribed.get("duet_split_reason"),
+                    }
+                audio_analysis_status = str(transcribed.get("status") or "")
+                audio_analysis_meta = {
+                    "source_audio_seconds": transcribed.get("source_audio_seconds"),
+                    "analysis_seconds": transcribed.get("analysis_seconds"),
+                    "duet_split": transcribed.get("duet_split"),
+                    "duet_split_confident": transcribed.get("duet_split_confident"),
+                    "duet_split_reason": transcribed.get("duet_split_reason"),
+                    "pitch_separation_hz": transcribed.get("pitch_separation_hz"),
+                    "vocal_separator_used": transcribed.get("vocal_separator_used"),
+                    "gender_model_used": transcribed.get("gender_model_used"),
+                    "gender_model_id": transcribed.get("gender_model_id"),
+                    "resolved_mode": "duet" if audio_reverse_context.get("duet") else "single",
+                    "resolved_picture": (
+                        (audio_reverse_context.get("single") or {}).get("picture")
+                        if not audio_reverse_context.get("duet") else None
+                    ),
+                }
                 if not lyric_timeline.strip():
                     raise RuntimeError(
                         "没有识别到可用歌词。请改用 large-v3.pt，或先用“视频台词识别”整理歌词时间线，再接到“台词时间线”输入。"
                     )
+            if audio_reverse_context.get("duet"):
+                male = audio_reverse_context.get("male") or {}
+                female = audio_reverse_context.get("female") or {}
+                scene = audio_reverse_context.get("scene") or {}
+                scene_context = (
+                    f"共同场景是 {scene.get('picture')} / {scene.get('subject')}。"
+                    if scene.get("picture") and scene.get("subject") else
+                    "两人使用参考素材中一致的共享环境。"
+                )
+                context_rule = (
+                    f"这是双人数字人对唱任务：男声是 {male.get('speaker')}，绑定 {male.get('picture')} / {male.get('subject')}；"
+                    f"女声是 {female.get('speaker')}，绑定 {female.get('picture')} / {female.get('subject')}；"
+                    f"{scene_context}"
+                    "每个时间段必须使用交替单人镜头：当前歌手是画面中唯一一个人，另一人完全在画外；"
+                    "画面内不能出现第二张脸、第二张嘴、第二具身体或第二套口型。"
+                )
+            else:
+                single_context = audio_reverse_context.get("single") or {}
+                single_picture = str(single_context.get("picture") or "<Picture 1>")
+                single_subject = str(single_context.get("subject") or "<Subject 1>")
+                context_rule = (
+                    f"这是单声部数字人提示词生成任务：{single_picture} 中的人物作为数字人主体 {single_subject}（S1）。"
+                    "不要定义或切到未参与演唱的另一位人物，整段只保留当前歌手。"
+                )
+            camera_rule = (
+                "运镜必须按创意 MV 设计，不能全片只用一个变焦或固定机位。三个以上歌词段时，至少使用三种真正不同的镜头："
+                "横移/滑轨、低机位跟拍、三分之四近景 Dolly、30° 小弧线、Crane/Pedestal 或手持跟随；"
+                "最后根据歌词落点做 Crane Up + Dolly Out。切镜只放在歌词起唱、换气或重音处，不能切在咬字中间；"
+                "当前演唱者的完整嘴部必须清楚可见；每个歌词镜头只能出现当前歌手一人，另一人始终完全在画外。"
+            )
             audio_rule = (
-                "这是 MiniMax H3 数字人提示词生成任务：<Picture 1> 中的人物作为数字人主体 <Subject 1>。"
-                "歌曲音频由 11 号工作流的数字人模式全局锁定，retention_analysis 写成“锁定歌曲音轨: fully_copy - ...”。"
+                context_rule
+                + camera_rule
+                + "歌曲音频由 11 号工作流的数字人模式全局锁定，retention_analysis 写成“锁定歌曲音轨: fully_copy - ...”。"
                 "最终提示词中禁止出现 <Audio N> 标签，因为数字人节点会删除它们并留下残缺字段。"
                 "以下是从音频识别出的带时间码歌词，已经是最终定稿：必须逐字原样写入 detailed_description 的 <d> 行，"
-                "禁止重新转写、改写、翻译、拆句或合并。每个时间段写成一行时间范围加一条紧凑的 <d>[Mandarin singing] 原歌词</d>。\n"
+                "禁止重新转写、改写、翻译、拆句或合并。每个时间段写成一行时间范围、对应歌手动作和一条紧凑的 "
+                "<d>[Mandarin singing] 原歌词</d>。\n"
                 + lyric_timeline
             )
             extra = f"{extra}\n\n{audio_rule}".strip()
@@ -971,18 +1127,44 @@ class AICG3DSkillPromptExpander:
             else "AUDIO_REVERSE" if audio_reverse
             else composer.MODE_TO_TASK.get(mode, "Ref2VA")
         )
+        if audio_reverse_context.get("duet"):
+            male = audio_reverse_context.get("male") or {}
+            female = audio_reverse_context.get("female") or {}
+            scene = audio_reverse_context.get("scene") or {}
+            scene_goal = (
+                f"两人处在共同场景 {scene.get('subject')}（{scene.get('picture')}）。"
+                if scene.get("subject") and scene.get("picture") else
+                "两人处在参考素材中一致的共享环境。"
+            )
+            digital_human_goal = (
+                "请只输出可直接粘贴到 11 号数字人工作流的 MiniMax H3 六段式正文。"
+                f"男声使用 {male.get('subject')}（{male.get('speaker')}，来自 {male.get('picture')}），"
+                f"女声使用 {female.get('subject')}（{female.get('speaker')}，来自 {female.get('picture')}），"
+                f"{scene_goal}"
+                "每段歌词必须绑定正确歌手并使用交替单人镜头：画面中有且只有当前歌手，另一人完全在画外。混合横移、低机位跟拍、30° 小弧线和结尾拉远；"
+                "切点放在歌词起唱或重音，严禁把两张脸放进同一演唱镜头，始终保留当前演唱者完整嘴部。retention_analysis 要分别保留两张人物图和场景图（如有），"
+                "并写“锁定歌曲音轨: fully_copy - ...”。禁止输出 <Audio N> 标签。把真实时间码歌词逐字写入 detailed_description。"
+            )
+        else:
+            single_context = audio_reverse_context.get("single") or {}
+            single_picture = str(single_context.get("picture") or "<Picture 1>")
+            single_subject = str(single_context.get("subject") or "<Subject 1>")
+            digital_human_goal = (
+                "请只输出可直接粘贴到 11 号数字人工作流的 MiniMax H3 六段式正文。"
+                f"把 {single_picture} 中的人物定义为 {single_subject}（S1），其他人物不参与本段演唱。"
+                "歌曲使用 11 号工作流锁定的全局音轨；retention_analysis 写“锁定歌曲音轨: fully_copy - ...”。"
+                "禁止输出 <Audio N> 标签。把识别歌词按真实时间码逐字写入 detailed_description，每段写成时间范围、"
+                "<Subject 1> 演唱动作和一条 <d>[Mandarin singing] 原歌词</d>，让口型与每个时间段逐字同步。"
+                "运镜按创意 MV 设计：横移揭示、低机位 Truck、三分之四 Dolly、30° 小弧线、Crane Up 拉远按歌词段变化；"
+                "切点只放歌词起唱、换气或重音，不切在咬字中间，不做单一变焦，始终保留演唱者完整嘴部。"
+                "不要分析、说明或额外解释。"
+            )
         output_goal = (
             "请严格依据实际图片证据，只输出一段可直接复制粘贴的图片生成提示词。不要摘要、结构化拆解、H3 参考用法、规避说明、分析或任何额外解释。"
             if image_reverse
             else "请严格依据实际视频证据，只输出 MiniMax H3 Ref2VA 六段式正文。不要镜头时间线、说明、分析或额外解释。"
             if video_reverse
-            else (
-                "请只输出可直接粘贴到 11 号数字人工作流的 MiniMax H3 六段式正文。把 <Picture 1> 中的人物定义为 "
-                "<Subject 1>（S1），歌曲使用 11 号工作流锁定的全局音轨；retention_analysis 写“锁定歌曲音轨: fully_copy - ...”。"
-                "禁止输出 <Audio N> 标签。把识别歌词按真实时间码逐字写入 detailed_description，每段写成时间范围、"
-                "<Subject 1> 演唱动作和一条 <d>[Mandarin singing] 原歌词</d>，让口型与每个时间段逐字同步。"
-                "不要镜头时间线、分析、说明或额外解释。"
-            )
+            else digital_human_goal
             if audio_reverse
             else "请只输出 MiniMax H3 六段式标准提示词正文，不要合并、省略或添加任何说明。"
             if h3_standard_mode
@@ -1014,6 +1196,7 @@ class AICG3DSkillPromptExpander:
             "media": _reference_media(references),
             "context": {},
             "system": context,
+            "audio_reverse_context": audio_reverse_context,
         }
         status = ""
         try:
@@ -1029,6 +1212,7 @@ class AICG3DSkillPromptExpander:
                     "context": {},
                     "system": context,
                     "lyric_timeline": lyric_timeline,
+                    "audio_reverse_context": audio_reverse_context,
                 },
             )
             status = f"已使用{'本地模型' if config.get('mode') == 'local' else config.get('provider') or '线上 API'}生成；加载 {len(used_references)} 份 Skill 规则。"
@@ -1056,9 +1240,13 @@ class AICG3DSkillPromptExpander:
             "model": config.get("model"),
             "local_model": config.get("local_model"),
         }
+        if audio_reverse and audio_analysis_meta:
+            request_payload["audio_analysis"] = audio_analysis_meta
         if audio_reverse and lyric_timeline:
             request_payload["lyric_timeline"] = lyric_timeline
             status = f"{status}\n\n[识别歌词与时间码]\n{lyric_timeline}".strip()
+        if audio_reverse and audio_analysis_status:
+            status = f"{status}\n\n[音频声部分析]\n{audio_analysis_status}".strip()
         public_payload = dict(request_payload)
         public_payload["media"] = _strip_media_binary(request_payload.get("media") or [])
         public_payload["references"] = _strip_media_binary(request_payload.get("references") or [])

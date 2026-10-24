@@ -14,6 +14,7 @@
 | 角色参考图 Skill | `character-refs`，作者标识 X：`@eternityspring` | Apache-2.0 | `skills/character-refs/SKILL.md`、`skills/character-refs/LICENSE` |
 | Python 运行依赖 | 例如 aiohttp、Pillow、numpy、Transformers、llama-cpp-python | 各自项目许可证 | 不随本仓库打包，由用户环境安装 |
 | 本地模型权重 | Qwen、Gemma 等模型 | 各自模型许可证 | 不由本插件分发；用户自行下载并接受相应条款 |
+| 男女声分类模型 | `7wolf/wav2vec2-base-gender-classification` | Apache-2.0 | 可选自动下载；来源：https://huggingface.co/7wolf/wav2vec2-base-gender-classification |
 
 ## 权利边界
 

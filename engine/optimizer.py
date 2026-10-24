@@ -989,8 +989,13 @@ def _system_prompt(
             "material in your output. Return only a copy-ready MiniMax H3 Ref2VA prompt containing exactly "
             "subject_definitions, summary, retention_analysis, detailed_description, overall_soundscape, and "
             "non_diegetic_music in that order, with nothing before or after. "
-            "Treat <Picture 1> as the digital human subject <Subject 1> (S1). The media audio is the globally locked song "
-            "track in MiniMax H3 digital-human mode; mark it as '锁定歌曲音轨: fully_copy - ...' in retention_analysis. "
+            "Follow the supplied singer mapping exactly. In single-singer mode, treat <Picture 1> as <Subject 1> (S1). "
+            "In duet mode, keep the male singer, female singer, and shared scene as separate subjects with their supplied "
+            "S-numbers and picture labels; never assign every lyric to Picture 1 or one singer. Use alternating solo coverage: "
+            "during each timed lyric, exactly one singer is visible and the other singer is completely off-screen, with no second "
+            "face, mouth, body, or lip movement in frame. Cut between a male solo shot and a female solo shot at singer changes. "
+            "The media audio is the globally "
+            "locked song track in MiniMax H3 digital-human mode; mark it as '锁定歌曲音轨: fully_copy - ...' in retention_analysis. "
             "Never output <Audio N> tags because the digital-human node removes them and leaves malformed fields. "
             "The supplied lyrics are final: copy each line verbatim, never re-transcribe, reword, split, merge, or translate "
             "them. Write each time range directly into detailed_description with the corresponding singing action and one "
@@ -998,6 +1003,14 @@ def _system_prompt(
             "around lyrics. Describe the digital human singing in sync with the locked audio so that the mouth, facial "
             "expression, and head movement match each lyric timestamp. Do not invent lyrics, sounds, people, or visual "
             "details that were not supplied. "
+            "Direct this as a contemporary music-video performance rather than a static talking-head shot. When there are "
+            "at least three lyric spans, vary the visual grammar across at least three genuinely different setups: lateral "
+            "slider or truck, low-angle tracking, three-quarter close-up with a real camera dolly, over-the-shoulder "
+            "shot/reverse-shot, a controlled 30-degree arc, handheld follow, crane or pedestal reveal, and a final pull-out. "
+            "Do not solve every beat with zoom or push-in. Put each cut on a lyric onset, breath, or musical accent, never "
+            "in the middle of a word. Keep the active singer's mouth readable and preserve screen direction, identity, "
+            "clothing, and the shared spatial relationship across cuts; the inactive duet singer keeps the mouth closed and "
+            "reacts naturally. "
             + direct_rule + language_rule
         )
     fl2va = task_upper == "FL2VA"
@@ -1509,6 +1522,9 @@ _AUDIO_REVERSE_LEAK_MARKERS = (
     "on-screen speaker",
     "speaker (S",
     "Skill 主说明",
+    "Skill 参考",
+    "references/template",
+    "references/digital-human-singing",
     "SKILL.md",
     "name: audio-prompt-reverse",
     "description: 上传歌曲",
@@ -1525,6 +1541,10 @@ _AUDIO_REVERSE_LEAK_MARKERS = (
     "歌曲音频由 11 号工作流",
     "既是数字人主体",
     "把<Picture 1>中的人物",
+    "运镜必须按创意 MV 设计",
+    "三个以上歌词段时",
+    "每个镜头只承担一个主要机位动作",
+    "不要全片只靠 Zoom",
 )
 
 
@@ -1548,12 +1568,16 @@ def _build_timed_lyrics_block(lyric_timeline: str) -> str:
     """
     blocks: list[str] = []
     subject = "<Subject 1>"
+    speaker = "S1"
     pending_time: tuple[float, float] | None = None
     for raw in str(lyric_timeline or "").splitlines():
         line = raw.strip()
         time_m = re.search(r"([\d.]+)\s*[-–]\s*([\d.]+)\s*秒", line)
         if time_m:
             pending_time = (float(time_m.group(1)), float(time_m.group(2)))
+        speaker_m = re.search(r"\|\s*(S\d+)\s*\|", line, re.I)
+        if speaker_m:
+            speaker = speaker_m.group(1).upper()
         subj_m = re.search(r"<Subject\s+\d+>", line)
         if subj_m:
             subject = subj_m.group(0)
@@ -1572,7 +1596,7 @@ def _build_timed_lyrics_block(lyric_timeline: str) -> str:
             lyric = re.sub(r"\s+", " ", d_m.group(2)).strip()
             start_s, end_s = pending_time
             blocks.append(
-                f"{_fmt_h3_ts(start_s)}-{_fmt_h3_ts(end_s)}, {subject} (S1) sings:\n"
+                f"{_fmt_h3_ts(start_s)}-{_fmt_h3_ts(end_s)}, {subject} ({speaker}) sings:\n"
                 f"<d>[{lang}] {lyric}</d>"
             )
     return "\n\n".join(blocks)
@@ -1639,36 +1663,140 @@ def _replace_audio_tags(text: str, output_language: str) -> str:
     return re.sub(r"<Audio\s+\d+>", label, value, flags=re.IGNORECASE)
 
 
-def _ensure_audio_reverse_sections(prompt: str, output_language: str) -> str:
+def _ensure_audio_reverse_sections(prompt: str, output_language: str, context: dict | None = None) -> str:
     """Guarantee the six H3 fields expected by the digital-human renderer."""
+    context = context if isinstance(context, dict) else {}
+    if context.get("duet"):
+        male = context.get("male") if isinstance(context.get("male"), dict) else {}
+        female = context.get("female") if isinstance(context.get("female"), dict) else {}
+        scene = context.get("scene") if isinstance(context.get("scene"), dict) else {}
+        male_subject = str(male.get("subject") or "<Subject 1>")
+        male_picture = str(male.get("picture") or "<Picture 1>")
+        male_speaker = str(male.get("speaker") or "S1")
+        female_subject = str(female.get("subject") or "<Subject 2>")
+        female_picture = str(female.get("picture") or "<Picture 2>")
+        female_speaker = str(female.get("speaker") or "S2")
+        scene_subject = str(scene.get("subject") or "").strip()
+        scene_picture = str(scene.get("picture") or "").strip()
+        chinese = str(output_language).lower().startswith(("zh", "chinese", "中文"))
+        audio_label = _audio_track_label(output_language)
+        if chinese:
+            scene_definition = (
+                f"{scene_subject} 是 {scene_picture} 中的共同场景，保持背景、光线和两人原有站位，但按歌词段只让当前歌手入画。"
+                if scene_subject and scene_picture else
+                "两人处于参考素材中一致的共享环境，保持背景、光线和原有站位，但按歌词段只让当前歌手入画。"
+            )
+            subject = (
+                f"{male_subject} 是 {male_picture} 中的男子，只负责男声（{male_speaker}）；{female_subject} 是 "
+                f"{female_picture} 中的女子，只负责女声（{female_speaker}）。{scene_definition}"
+                "对唱采用交替单人镜头：男声时间段画面中有且只有男子，女子完全在画外；女声时间段画面中有且只有女子，男子完全在画外。每个时间段只出现一张演唱的嘴，不生成第二人的正脸、嘴部、身体或口型。"
+            )
+            summary = "[reference generation + digital human duet + audio reuse] 男女两位歌手在同一场景中按照锁定歌曲音轨交替独唱；每个时间段只出现当前歌手一个人，另一人完全在画外，从不同时出现两张演唱的嘴。"
+            retention_lines = [
+                f"{male_picture}: fully_preserved - 男子的身份、脸型、发型、服装、配饰和体型完整保留。",
+                f"{female_picture}: fully_preserved - 女子的身份、脸型、发型、服装、配饰和体型完整保留。",
+            ]
+            if scene_subject and scene_picture:
+                retention_lines.append(
+                    f"{scene_picture}: fully_preserved - 两人的共同场景、空间位置、光线和构图保持稳定。"
+                )
+            retention_lines.append(
+                f"{audio_label}: fully_copy - 原歌曲、男女声、伴奏、节奏、停顿、音色和时长作为完整最终音轨原样复用。"
+            )
+            retention = "\n".join(retention_lines)
+            scene_reference = (
+                f"{scene_subject} 的共同环境中"
+                if scene_subject else "与参考素材一致的共享环境中"
+            )
+            detail = (
+                f"[Shot 1] 写实 MV 风格，{male_subject}（{male_speaker}）和 {female_subject}（{female_speaker}）位于 "
+                f"{scene_reference}，分别保持 {male_picture} 与 {female_picture} 中的人物身份、服装和外观。"
+                "采用 MV 交替单人镜头：男声段只拍男子，女声段只拍女子；切点落在歌词起唱而不是咬字中间。"
+                "每个镜头画面中有且只有当前歌手一个人，另一人完全在画外，不出现第二张脸、第二张嘴或第二套口型。"
+                "当前歌手完成口型、下颌、呼吸、眼神和头肩律动，镜头运动与共享场景的空间关系跨镜头连续。"
+            )
+        else:
+            scene_definition = (
+                f"{scene_subject} is the shared scene from {scene_picture}, preserving both singers' blocking, background, lighting, and composition."
+                if scene_subject and scene_picture else
+                "Both singers remain in one consistent shared environment, preserving blocking, background, lighting, and eyelines."
+            )
+            subject = (
+                f"{male_subject} is the man from {male_picture}, responsible only for the male vocal ({male_speaker}). "
+                f"{female_subject} is the woman from {female_picture}, responsible only for the female vocal ({female_speaker}). "
+                f"{scene_definition} Use alternating solo coverage: a male lyric shows only the man while the woman is completely "
+                "off-screen; a female lyric shows only the woman while the man is completely off-screen. Each timed lyric contains "
+                "exactly one visible singing mouth and never shows a second face, mouth, body, or lip movement."
+            )
+            summary = "[reference generation + digital human duet + audio reuse] The male and female singers alternate solo coverage in the same scene from the locked source song track; each timed lyric shows only its assigned singer, while the other singer remains completely off-screen."
+            retention_lines = [
+                f"{male_picture}: fully_preserved - the man's identity, face, hairstyle, clothing, accessories, and body shape remain stable.",
+                f"{female_picture}: fully_preserved - the woman's identity, face, hairstyle, clothing, accessories, and body shape remain stable.",
+            ]
+            if scene_subject and scene_picture:
+                retention_lines.append(
+                    f"{scene_picture}: fully_preserved - the shared scene, blocking, lighting, and composition remain stable."
+                )
+            retention_lines.append(
+                f"{audio_label}: fully_copy - the original song, both vocal parts, accompaniment, rhythm, pauses, timbre, and duration are reused unchanged as the final soundtrack."
+            )
+            retention = "\n".join(retention_lines)
+            scene_reference = (
+                f"the shared environment of {scene_subject}"
+                if scene_subject else "one consistent shared environment from the references"
+            )
+            detail = (
+                f"[Shot 1] Realistic music-video style. {male_subject} ({male_speaker}) and {female_subject} ({female_speaker}) perform in "
+                f"{scene_reference}, preserving the identities, clothing, and appearance from {male_picture} and {female_picture}. "
+                "Build the duet from alternating solo coverage: male lyrics show only the man, female lyrics show only the woman, "
+                "and cuts land on lyric onsets. Each shot contains exactly one singer; the other is completely off-screen with no "
+                "second face, mouth, body, or lip movement. The active singer performs synchronized lip, jaw, breathing, gaze, "
+                "head, and shoulder motion while the shared scene and screen direction remain continuous across cuts."
+            )
+        ensured = {
+            "subject_definitions": subject,
+            "summary": summary,
+            "retention_analysis": retention,
+            "detailed_description": detail,
+            "overall_soundscape": "N/A",
+            "non_diegetic_music": "N/A",
+        }
+        return "\n\n".join(f"{name}:\n{ensured[name]}" for name in _H3_SECTION_ORDER if name in ensured).strip()
     chinese = str(output_language).lower().startswith(("zh", "chinese", "中文"))
     audio_label = _audio_track_label(output_language)
+    single = context.get("single") if isinstance(context.get("single"), dict) else {}
+    forced_single = bool(single)
+    single_picture = str(single.get("picture") or "<Picture 1>")
+    single_subject = str(single.get("subject") or "<Subject 1>")
+    single_speaker = str(single.get("speaker") or "S1")
     sections = _split_audio_reverse_sections(prompt)
     plain = "" if sections else _strip_audio_reverse_leak(prompt)
     defaults = (
         {
-            "subject": "<Subject 1> 是 <Picture 1> 中的人物，保持脸型、五官、发型、服装、配饰、体型和整体构图稳定。人物是目标视频中的歌手（S1）。",
-            "summary": "[reference generation + digital human audio reuse] 人物保持 <Picture 1> 中的身份与外观，按照数字人模式锁定的原歌曲音轨完成逐字演唱、口型和表情同步。",
-            "retention": f"<Picture 1>: fully_preserved - 人物身份、脸型、发型、服装、配饰、体型和构图完整保留。\n{audio_label}: fully_copy - 原歌曲音轨作为目标视频的完整最终音轨按原样复用。",
-            "detail": "[Shot 1] 写实音乐视频风格，<Subject 1>（S1）保持 <Picture 1> 中的人物外观、服装、背景和构图，镜头保持稳定或小幅推进。人物按照锁定歌曲音轨的节拍、旋律、咬字、换气和重音完成准确口型同步，头部、肩颈、眼神和呼吸只做自然小幅律动，面部身份和构图全程稳定。",
+            "subject": f"{single_subject} 是 {single_picture} 中的人物，保持脸型、五官、发型、服装、配饰、体型和整体构图稳定。人物是目标视频中的歌手（{single_speaker}）。",
+            "summary": f"[reference generation + digital human audio reuse] 人物保持 {single_picture} 中的身份与外观，按照数字人模式锁定的原歌曲音轨完成逐字演唱、口型和表情同步。",
+            "retention": f"{single_picture}: fully_preserved - 人物身份、脸型、发型、服装、配饰、体型和构图完整保留。\n{audio_label}: fully_copy - 原歌曲音轨作为目标视频的完整最终音轨按原样复用。",
+            "detail": f"[Shot 1] 写实 MV 风格，{single_subject}（{single_speaker}）保持 {single_picture} 中的人物身份、服装和场景关系。用“前景横移揭示 → 低机位侧向 Truck → 三分之四近景 Dolly → 30° 小弧线 → Crane Up 拉远”的有目的切镜组成演唱段落，每句只在起唱、换气或重音处切换，始终保留正在演唱者的完整嘴部。人物按照锁定歌曲音轨的节拍、旋律、咬字、换气和重音完成准确口型同步，身体随乐句改变重心和手势，不做机械重复摆动。",
         }
         if chinese else
         {
-            "subject": "<Subject 1> is the person from <Picture 1>. Preserve the face, features, hairstyle, clothing, accessories, body shape, and overall composition. The person is the singer (S1) in the target video.",
-            "summary": "[reference generation + digital human audio reuse] The person preserves the identity and appearance from <Picture 1> and sings every supplied lyric on the locked source song track with synchronized mouth, facial expression, and breathing.",
-            "retention": f"<Picture 1>: fully_preserved - the person's identity, face, hairstyle, clothing, accessories, body shape, and composition remain stable.\n{audio_label}: fully_copy - the original song audio is reused unchanged as the complete final soundtrack.",
-            "detail": "[Shot 1] Realistic music-video style. <Subject 1> (S1) keeps the appearance, clothing, background, and composition from <Picture 1>, with a stable camera or a slight push-in. The mouth, jaw, lips, breathing, gaze, head, and shoulders follow the locked song track with accurate lip sync and restrained natural motion while facial identity remains stable.",
+            "subject": f"{single_subject} is the person from {single_picture}. Preserve the face, features, hairstyle, clothing, accessories, body shape, and overall composition. The person is the singer ({single_speaker}) in the target video.",
+            "summary": f"[reference generation + digital human audio reuse] The person preserves the identity and appearance from {single_picture} and sings every supplied lyric on the locked source song track with synchronized mouth, facial expression, and breathing.",
+            "retention": f"{single_picture}: fully_preserved - the person's identity, face, hairstyle, clothing, accessories, body shape, and composition remain stable.\n{audio_label}: fully_copy - the original song audio is reused unchanged as the complete final soundtrack.",
+            "detail": f"[Shot 1] Realistic music-video style. {single_subject} ({single_speaker}) preserves the identity, clothing, and scene relationship from {single_picture}. Build the vocal section from motivated setups: a foreground lateral reveal, low-angle tracking, a three-quarter dolly close-up, a controlled 30-degree arc, and a final crane pull-out. Cut only on lyric onsets, breaths, or accents and keep the active singer's mouth fully readable. The mouth, jaw, lips, breathing, gaze, head, and shoulders follow the locked song track with accurate lip sync while identity remains stable.",
         }
     )
-    subject = _replace_audio_tags(sections.get("subject_definitions") or plain or defaults["subject"], output_language)
-    if "<Subject 1>" not in subject:
+    subject_source = defaults["subject"] if forced_single else (sections.get("subject_definitions") or plain or defaults["subject"])
+    subject = _replace_audio_tags(subject_source, output_language)
+    if single_subject not in subject or single_picture not in subject:
         subject = f"{defaults['subject']}\n{subject}".strip()
-    retention = _replace_audio_tags(sections.get("retention_analysis") or defaults["retention"], output_language)
-    if "<Picture 1>" not in retention or "fully_preserved" not in retention.lower():
+    retention_source = defaults["retention"] if forced_single else (sections.get("retention_analysis") or defaults["retention"])
+    retention = _replace_audio_tags(retention_source, output_language)
+    if single_picture not in retention or "fully_preserved" not in retention.lower():
         picture_retention = (
-            "<Picture 1>: fully_preserved - 人物身份、脸型、发型、服装、配饰、体型和构图完整保留。"
+            f"{single_picture}: fully_preserved - 人物身份、脸型、发型、服装、配饰、体型和构图完整保留。"
             if chinese else
-            "<Picture 1>: fully_preserved - the person's identity, face, hairstyle, clothing, accessories, body shape, and composition remain unchanged."
+            f"{single_picture}: fully_preserved - the person's identity, face, hairstyle, clothing, accessories, body shape, and composition remain unchanged."
         )
         retention = f"{picture_retention}\n{retention}".strip()
     if "fully_copy" not in retention.lower():
@@ -1678,7 +1806,7 @@ def _ensure_audio_reverse_sections(prompt: str, output_language: str) -> str:
         detail = f"[Shot 1] {detail}".strip()
     ensured = {
         "subject_definitions": subject,
-        "summary": _replace_audio_tags(sections.get("summary") or defaults["summary"], output_language),
+        "summary": _replace_audio_tags(defaults["summary"] if forced_single else (sections.get("summary") or defaults["summary"]), output_language),
         "retention_analysis": retention,
         "detailed_description": detail,
         "overall_soundscape": "N/A",
@@ -1687,30 +1815,342 @@ def _ensure_audio_reverse_sections(prompt: str, output_language: str) -> str:
     return "\n\n".join(f"{name}:\n{ensured[name]}" for name in _H3_SECTION_ORDER if name in ensured).strip()
 
 
-def _inject_audio_reverse_lyrics(prompt: str, lyric_timeline: str, output_language: str = "中文") -> str:
+def _parse_lyric_timeline(lyric_timeline: str) -> list[dict[str, Any]]:
+    entries = []
+    pending_time = None
+    pending_speaker = "S1"
+    pending_picture = "<Picture 1>"
+    pending_subject = "<Subject 1>"
+    for raw in str(lyric_timeline or "").splitlines():
+        line = raw.strip()
+        time_match = re.search(r"([\d.]+)\s*[-–]\s*([\d.]+)\s*秒", line)
+        if time_match:
+            pending_time = (float(time_match.group(1)), float(time_match.group(2)))
+            speaker_match = re.search(r"\|\s*(S\d+)\s*\|", line, re.I)
+            picture_match = re.search(r"<Picture\s+\d+>", line, re.I)
+            subject_match = re.search(r"<Subject\s+\d+>", line, re.I)
+            if speaker_match:
+                pending_speaker = speaker_match.group(1).upper()
+            if picture_match:
+                pending_picture = picture_match.group(0)
+            if subject_match:
+                pending_subject = subject_match.group(0)
+            continue
+        dialogue_match = re.search(r"<d>\s*\[([^\]]+)\]\s*(.*?)</d>", line, re.DOTALL)
+        if dialogue_match and pending_time:
+            entries.append({
+                "start": pending_time[0],
+                "end": pending_time[1],
+                "speaker": pending_speaker,
+                "picture": pending_picture,
+                "subject": pending_subject,
+                "language": dialogue_match.group(1).strip(),
+                "lyric": re.sub(r"\s+", " ", dialogue_match.group(2)).strip(),
+            })
+            pending_time = None
+    return entries
+
+
+def _mv_shot_style(index: int, count: int, duet: bool, chinese: bool, duration: float = 0.0) -> str:
+    """Return a distinct MV camera setup without relying on zoom."""
+    if chinese:
+        if count <= 1:
+            return (
+                "用一个连续复合长镜头完成整段：低机位广角横移借现场前景揭示歌手，随后以约 30° 受控小弧线转到三分之四近景，"
+                "最后 Crane Up 轻微拉远留出环境；所有变化由机位位移和景别转换完成，运动方向清楚"
+            )
+        if duet:
+            opening = (
+                "镜头从共享场景的背景线条横移到当前歌手的单人中景，人物保持原场景位置，画面中只有当前歌手一个人"
+            )
+            middle = (
+                "单人低机位中近景，沿当前歌手肩线做平行 Truck，背景产生视差，画面不安排第二张脸",
+                "当前歌手三分之四近景，用真实 Dolly In 靠近眼睛，前景只使用场景遮挡，不用另一位歌手当前景",
+                "从场景侧后方起幅，围绕当前歌手做约 30° 受控 Arc，让背景层次展开，下一句起唱前切出",
+                "手持中近景跟随当前歌手的重心和手势，以肩部转向做动作匹配，再切入新的单人机位",
+                "高机位 Crane/Pedestal 小幅下降，越过现场固定前景落到当前歌手的三分之四近景",
+            )
+            ending = (
+                "结尾用 Crane Up 配合 Dolly Out 从当前歌手单人近景拉回共享场景，画面仍只有当前歌手一个人"
+            )
+        else:
+            opening = (
+                "低机位三分之二广角横移开场，镜头先读环境再借现场前景视差揭示歌手，首句落下时落到完整面部"
+            )
+            middle = (
+                "低机位中近景，沿肩线做平行 Truck，背景空间线产生速度差，歌手随重音改变重心并转向镜头",
+                "三分之四侧面近景用真实 Dolly In 靠近眼睛，焦点从前景边缘拉到眼神，同时保留完整嘴部",
+                "从肩后斜角起幅，围绕歌手做约 30° 受控 Arc，在下一句前切到正面反打，避免绕到全侧面",
+                "手持中近景跟随身体重心，先跟肩部再抬到眼神；歌手向前半步时用动作匹配硬切到新角度",
+                "高机位 Crane/Pedestal 小幅下降，越过现场前景轮廓落到三分之四近景，背景层次向下压缩",
+                "侧向滑轨从暗部滑入亮部，利用现场光线变化形成擦镜转场，机位完成半身到近景的自然推进",
+            )
+            ending = (
+                "结尾用 Crane Up 配合 Dolly Out 拉回完整空间，先保留近景再逐渐露出场景，最后停在人物仍演唱的开放构图"
+            )
+        style = opening if index == 0 else ending if index == count - 1 else middle[(index - 1) % len(middle)]
+        if 0 < index < count - 1:
+            if duration >= 3.2:
+                long_rhythm = (
+                    "长句内部让机位连续完成一次明确变化，但不在咬字中间切换",
+                    "长音段落把运动拆成前后两拍，先跟动作再落到眼神",
+                    "句尾保留短暂稳定落点，让下一次切镜有呼吸空间",
+                )
+                style += "；" + long_rhythm[index % len(long_rhythm)]
+            elif duration <= 1.1:
+                short_rhythm = (
+                    "短句采用干脆入点和一次轻微机位惯性",
+                    "这一句用短促切点和克制的机身运动",
+                    "短句以轻快换景推进，画面节奏利落",
+                    "句尾不做多余运动，给下一句保留切点",
+                )
+                style += "；" + short_rhythm[index % len(short_rhythm)]
+        return style
+    if count <= 1:
+        return (
+            "Use one continuous compound take: a low-angle wide lateral slider reveals the singer through existing foreground, "
+            "then a controlled 30-degree arc settles into a three-quarter close-up, followed by a small crane-up pull-out; "
+            "all emphasis comes from camera position and a clear change in shot scale"
+        )
+    if duet:
+        opening = (
+            "Lateral slide from the shared background into a solo medium shot of the current singer, keeping the original scene position and only one person in frame"
+        )
+        middle = (
+            "Solo low-angle medium close-up with a parallel shoulder truck, using background parallax and no second face in frame",
+            "Three-quarter solo close-up with a real dolly toward the eyes; use only scene foreground, never the other singer, as an occluder",
+            "Start from a side-back scene angle and make a controlled 30-degree arc around the current singer, then cut before the next lyric onset",
+            "Handheld solo medium follow of the current singer's weight shift and gesture, using the shoulder turn as an action-matched cut",
+            "Small high-angle crane or pedestal descent past fixed set foreground onto a three-quarter close-up of the current singer",
+        )
+        ending = (
+            "Finish with a crane-up and dolly-out from the solo close-up back into the shared scene while exactly one singer remains in frame"
+        )
+    else:
+        opening = (
+            "Open on a low-angle three-quarter wide lateral slider that reads the environment first and reveals the singer through existing foreground parallax on the first lyric"
+        )
+        middle = (
+            "Low-angle medium close-up with a parallel shoulder truck, using background parallax while the singer shifts weight and turns toward the lens on the accent",
+            "Use a three-quarter profile close-up with a real dolly in; rack focus from a foreground edge to the eyes while keeping the entire mouth readable",
+            "Start behind the shoulder and make a controlled 30-degree arc onto the face, then cut back to a frontal reverse before a full profile can destabilize identity",
+            "Follow the body's weight shift in a handheld medium close-up, move from shoulder to eyeline, and use the half-step toward camera as an action-matched cut",
+            "Use a small high-angle crane or pedestal descent past existing foreground onto a three-quarter close-up, compressing the background layers",
+            "Slide laterally from shadow into the existing light, using the light change as a wipe-like transition while moving from waist-up framing to a close-up",
+        )
+        ending = (
+            "Finish with a crane-up and dolly-out that reveals the full space, holding the singer in close-up before opening to the environment and ending while the performance continues"
+        )
+    style = opening if index == 0 else ending if index == count - 1 else middle[(index - 1) % len(middle)]
+    if 0 < index < count - 1:
+        if duration >= 3.2:
+            long_rhythm = (
+                "make one clear camera adjustment inside the long lyric span without cutting mid-word",
+                "split the sustained phrase into two visual beats, following the body first and landing on the eyes",
+                "leave a brief settled landing at the phrase end so the next cut can breathe",
+            )
+            style += "; " + long_rhythm[index % len(long_rhythm)]
+        elif duration <= 1.1:
+            short_rhythm = (
+                "use a crisp entry and one light camera follow-through",
+                "keep the cut short and the camera motion restrained",
+                "use a nimble change of setup for this short phrase",
+                "settle at the phrase end and preserve a clean cut point",
+            )
+            style += "; " + short_rhythm[index % len(short_rhythm)]
+    return style
+
+
+def _mv_transition(index: int, count: int, previous: dict[str, Any] | None, current: dict[str, Any], chinese: bool) -> str:
+    if index <= 0:
+        return "开场" if chinese else "Opening"
+    speaker_changed = bool(previous and previous.get("speaker") != current.get("speaker"))
+    is_ending = index == count - 1
+    if chinese:
+        if is_ending:
+            return "最后一句起唱时硬切到当前歌手的收束单人机位，上一歌手在切点前闭唇并完全离开画面"
+        if speaker_changed:
+            return "下一句第一个字硬切到另一位歌手的单人镜头，上一歌手在切点前闭唇并完全离开画面"
+        transitions = (
+            "句首硬切到新的景别，切点压在歌词起音",
+            "顺着手势或转头做动作匹配切，不切在咬字中间",
+            "借现场前景边缘擦镜切入新机位，保持人物位置不变",
+            "乐句重音处直切近景，用明显的景别跳变加强力度",
+        )
+        return transitions[(index - 1) % len(transitions)]
+    if is_ending:
+        return "Hard cut to the current singer's solo closing setup on the final lyric onset; the previous singer closes the lips and leaves frame before the cut"
+    if speaker_changed:
+        return "Hard cut to the other singer's solo setup on the first syllable; the previous singer closes the lips and leaves frame before the cut"
+    transitions = (
+        "Hard cut to a new shot scale on the lyric onset, never mid-word",
+        "Use a gesture or head turn as an action-matched cut",
+        "Wipe through the edge of existing foreground into a new camera position while the singer stays put",
+        "Cut directly to a close-up on the musical accent to add emphasis through a clear change of shot scale",
+    )
+    return transitions[(index - 1) % len(transitions)]
+
+
+def _mv_performance(index: int, count: int, chinese: bool) -> str:
+    if chinese:
+        if count <= 1:
+            return "表演从自然呼吸和克制的重心变化开始，唱到长音时抬眼，结尾减小动作并把视线留在场景里"
+        if index == 0:
+            return "表演从自然呼吸起，第一句后半抬眼看向镜头，肩颈随旋律松沉，不做重复机械摆手"
+        if index == count - 1:
+            return "最后一句收小动作，眼神从镜头移向共享场景，保留余韵"
+        if index % 3 == 1:
+            return "随重音改变重心，只做一次明确的抬手或落肩，胸口呼吸和下颌动作连续"
+        if index % 3 == 2:
+            return "在长音处略微侧身再回到镜头，眼神先移动、身体随后跟上，避免僵硬站桩"
+        return "动作幅度随乐句提升，向前半步并抬眸，嘴部始终完整可见"
+    if count <= 1:
+        return "Start with natural breathing and a restrained weight shift, lift the eyes on a sustained note, then reduce the gesture at the end and leave the gaze in the scene"
+    if index == 0:
+        return "Start from natural breathing, lift the eyes toward the lens in the second half of the first line, and release the shoulders with the melody instead of repeating a mechanical hand wave"
+    if index == count - 1:
+        return "Reduce the gesture on the final line, move the gaze from the lens toward the shared scene, and leave a quiet afterbeat"
+    if index % 3 == 1:
+        return "Shift weight on the accent, make one clear hand lift or shoulder release, and keep breathing and jaw motion continuous"
+    if index % 3 == 2:
+        return "Turn slightly away on the sustained note and return to the lens, leading with the eyes and letting the body follow without freezing"
+    return "Increase the physical commitment with the phrase, take half a step toward camera, lift the eyes, and keep the whole mouth visible"
+
+
+def _mv_duet_singer_labels(entry: dict[str, Any], context: dict, chinese: bool) -> tuple[str, str]:
+    male = context.get("male") if isinstance(context.get("male"), dict) else {}
+    female = context.get("female") if isinstance(context.get("female"), dict) else {}
+    speaker = str(entry.get("speaker") or "").upper()
+    active_mapping = None
+    active_role = ""
+    inactive_mapping = None
+    inactive_role = ""
+    if speaker and speaker == str(male.get("speaker") or "").upper():
+        active_mapping, active_role = male, ("男声歌手" if chinese else "male singer")
+        inactive_mapping, inactive_role = female, ("女声歌手" if chinese else "female singer")
+    elif speaker and speaker == str(female.get("speaker") or "").upper():
+        active_mapping, active_role = female, ("女声歌手" if chinese else "female singer")
+        inactive_mapping, inactive_role = male, ("男声歌手" if chinese else "male singer")
+    if not active_mapping or not inactive_mapping:
+        active = f"{entry['subject']} ({entry['speaker']})"
+        inactive = "另一位歌手" if chinese else "the other singer"
+        return active, inactive
+    active = f"{active_role} {entry['subject']} ({entry['speaker']})"
+    inactive = (
+        f"{inactive_role} {inactive_mapping.get('subject') or '<Subject>'} "
+        f"({inactive_mapping.get('speaker') or 'S?'})"
+    )
+    return active, inactive
+
+
+def _build_mv_shot_timeline(lyric_timeline: str, output_language: str, context: dict) -> str:
+    entries = _parse_lyric_timeline(lyric_timeline)
+    if not entries:
+        return ""
+    chinese = str(output_language).lower().startswith(("zh", "chinese", "中文"))
+    duet = bool(context.get("duet"))
+    scene_subject = str((context.get("scene") or {}).get("subject") or "").strip()
+    lines = []
+    for index, entry in enumerate(entries):
+        previous = entries[index - 1] if index else None
+        next_entry = entries[index + 1] if index + 1 < len(entries) else None
+        duration = max(0.0, float(entry.get("end", 0.0)) - float(entry.get("start", 0.0)))
+        style = _mv_shot_style(index, len(entries), duet, chinese, duration)
+        transition = _mv_transition(index, len(entries), previous, entry, chinese)
+        performance = _mv_performance(index, len(entries), chinese)
+        if duet:
+            active, inactive = _mv_duet_singer_labels(entry, context, chinese)
+        else:
+            single = context.get("single") if isinstance(context.get("single"), dict) else {}
+            single_gender = str(single.get("gender") or "").lower()
+            voice_role = (
+                ("女声歌手" if chinese else "female singer")
+                if single_gender == "female" else
+                ("男声歌手" if chinese else "male singer")
+                if single_gender == "male" else ""
+            )
+            active = f"{voice_role} {entry['subject']} ({entry['speaker']})".strip()
+            inactive = ""
+        time_range = f"{_fmt_h3_ts(entry['start'])}-{_fmt_h3_ts(entry['end'])}"
+        speaker_change_next = bool(next_entry and next_entry.get("speaker") != entry.get("speaker"))
+        if chinese:
+            scene_continuity = (
+                f"人物始终位于 {scene_subject} 的同一空间，" if scene_subject else "人物始终处于同一共享场景，"
+            )
+            if duet:
+                solo_visibility = (
+                    f"本镜为单人演唱镜头：画面中有且只有 {active} 一个人；{inactive} 完全在画外，"
+                    "不出现第二张脸、第二张嘴、第二具身体、第二个人影或任何口型动作。"
+                )
+                handoff = (
+                    "本段结束处嘴唇自然闭合；下一镜只切到另一位歌手。"
+                    if speaker_change_next else
+                    "本段结束处嘴唇自然闭合；下一镜仍只保留当前歌手。"
+                )
+            else:
+                solo_visibility = ""
+                handoff = "人物身份、服装和空间关系保持连续。"
+            shot_header = (
+                f"[Shot {index + 1}] {transition}。{style}。"
+                if index == 0 else
+                f"[Shot {index + 1}] 在 {_fmt_h3_ts(entry['start'])} 处，{transition}。{style}。"
+            )
+            block = (
+                f"{shot_header}\n{solo_visibility}{scene_continuity}{active} 是当前唯一开口演唱者；"
+                "以锁定歌曲音轨中的原声音色、语速、咬字和气息演唱，嘴唇、下颌、呼吸、眼神和头肩律动严格同步。"
+                f"{performance}。{handoff}\n{time_range}，{active} 演唱："
+            )
+        else:
+            scene_continuity = (
+                f"Stay inside one continuous space in {scene_subject}. "
+                if scene_subject else "Stay inside one continuous shared environment. "
+            )
+            if duet:
+                solo_visibility = (
+                    f"This is a solo-singer shot: exactly one person, {active}, is in frame. {inactive} is completely off-screen, "
+                    "with no second face, mouth, body, silhouette, or lip movement."
+                )
+                handoff = (
+                    "Close the lips naturally at the end of this lyric; the next cut shows only the other singer."
+                    if speaker_change_next else
+                    "Close the lips naturally at the end of this lyric; the next shot still keeps only the current singer."
+                )
+            else:
+                solo_visibility = ""
+                handoff = "Identity, clothing, and spatial relationships remain continuous."
+            shot_header = (
+                f"[Shot {index + 1}] {transition}. {style}."
+                if index == 0 else
+                f"[Shot {index + 1}] At {_fmt_h3_ts(entry['start'])}, {transition}. {style}."
+            )
+            block = (
+                f"{shot_header}\n{solo_visibility}{scene_continuity}{active} is the only singer opening the mouth, "
+                "using the exact timbre, pacing, articulation, and breath from the locked song track; lips, jaw, breathing, gaze, "
+                f"head, and shoulder motion stay synchronized. {performance}. {handoff}\n{time_range}, {active} sings:"
+            )
+        lines.append(f"{block}\n<d>[{entry['language']}] {entry['lyric']}</d>")
+    return "\n\n".join(lines)
+
+
+def _inject_audio_reverse_lyrics(prompt: str, lyric_timeline: str, output_language: str = "中文", context: dict | None = None) -> str:
+    context = context if isinstance(context, dict) else {}
     """Insert exact timed lyrics into detailed_description after cleaning model-generated lyrics."""
     sections = _split_audio_reverse_sections(prompt)
     if not sections:
         return prompt
-    lyric_block = _build_timed_lyrics_block(lyric_timeline)
-    if not lyric_block:
+    mv_timeline = _build_mv_shot_timeline(lyric_timeline, output_language, context)
+    if not mv_timeline:
         return prompt
-    cleaned_dd = _strip_audio_reverse_leak(sections.get("detailed_description") or "")
-    if not cleaned_dd:
-        cleaned_dd = "[Shot 1] The digital human performs the song in the composition from <Picture 1>."
-    if "[Shot 1]" not in cleaned_dd:
-        cleaned_dd = f"[Shot 1] {cleaned_dd}".strip()
-    cue = "演唱、口型与歌词严格按以下时间码同步：" if str(output_language).lower().startswith(("zh", "chinese", "中文")) else "The singing, lip sync, and lyrics follow this timecode schedule:"
-    sections["detailed_description"] = f"{cleaned_dd}\n\n{cue}\n{lyric_block}".strip()
+    sections["detailed_description"] = mv_timeline
     kept = [f"{name}:\n{sections[name]}" for name in _H3_SECTION_ORDER if sections.get(name)]
     return "\n\n".join(kept).strip()
 
 
-def _finalize_audio_reverse_output(text: str, lyric_timeline: str, output_language: str) -> str:
+def _finalize_audio_reverse_output(text: str, lyric_timeline: str, output_language: str, context: dict | None = None) -> str:
     value = _sanitize_audio_reverse_output(text)
     value = _replace_audio_tags(value, output_language)
-    value = _ensure_audio_reverse_sections(value, output_language)
-    value = _inject_audio_reverse_lyrics(value, lyric_timeline, output_language)
+    value = _ensure_audio_reverse_sections(value, output_language, context)
+    value = _inject_audio_reverse_lyrics(value, lyric_timeline, output_language, context)
     return _replace_audio_tags(value, output_language).strip()
 
 
@@ -2222,6 +2662,7 @@ def generate_prompt_sync(config: dict | None, payload: dict) -> str:
             result_clean,
             str(payload.get("lyric_timeline") or ""),
             str(normalized.get("output_language") or "English"),
+            payload.get("audio_reverse_context") if isinstance(payload.get("audio_reverse_context"), dict) else {},
         )
     return result_clean
 
@@ -2317,6 +2758,7 @@ async def optimize_prompt(request):
                 formatted,
                 str(payload.get("lyric_timeline") or ""),
                 str(config.get("output_language") or "English"),
+                payload.get("audio_reverse_context") if isinstance(payload.get("audio_reverse_context"), dict) else {},
             )
             return web.json_response({"prompt": formatted})
         if task_name != "VIDEO_REVERSE":
