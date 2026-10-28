@@ -5,7 +5,7 @@
 ![license](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)
 ![ComfyUI](https://img.shields.io/badge/ComfyUI-custom%20node-1E90FF)
 
-独立的 ComfyUI 提示词插件。它把"漫剧老李 AIGC 创作全流程 Skill"适配为 **MiniMax H3** 版本：用一个主节点把一句创意、参考素材和 Skill 规则，扩展成可直接投喂给 MiniMax H3 的六段式提示词。
+独立的 ComfyUI 提示词插件。它把 "创作全流程 Skill"适配为 **MiniMax H3** 版本：用一个主节点把一句创意、参考素材和 Skill 规则，扩展成可直接投喂给 MiniMax H3 的六段式提示词。
 
 **核心用途一句话**：你给一句创意、几张图/一段视频/一首歌，它帮你产出可直接复制粘贴给 MiniMax H3 的 `subject_definitions / summary / retention_analysis / detailed_description / overall_soundscape / non_diegetic_music` 六段式提示词。
 
